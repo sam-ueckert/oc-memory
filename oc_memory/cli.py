@@ -16,6 +16,8 @@ Usage:
   oc-memory backup                    Full backup (export + optional sqlite copy)
   oc-memory restore <json_path>       Restore from JSON export
   oc-memory stats                     Show statistics
+  oc-memory tag <id> <tag> [tag...]    Add tags to a cell
+  oc-memory search-tag <tag>          Find cells by tag
   oc-memory forget <id>               Delete a cell
   oc-memory decay                     Decay old low-access memories
 
@@ -131,9 +133,11 @@ def main():
         if results:
             for r in results:
                 sim = f" sim:{r['similarity']:.3f}" if "similarity" in r else ""
+                tags = r.get("tags", "[]")
+                tags_str = f" tags:{tags}" if tags and tags != "[]" else ""
                 print(
                     f"[{r['id']}] [{r['cell_type']}] scene:{r['scene']} "
-                    f"sal:{r['salience']:.2f}{sim} — {r['content'][:120]}"
+                    f"sal:{r['salience']:.2f}{sim}{tags_str} — {r['content'][:120]}"
                 )
         else:
             print("No results found.")
@@ -235,6 +239,31 @@ def main():
 
     elif cmd == "stats":
         print(json.dumps(db.stats(), indent=2))
+
+    elif cmd == "tag":
+        cell_id = int(sys.argv[2])
+        tags = sys.argv[3:]
+        if not tags:
+            print("Usage: oc-memory tag <id> <tag> [tag...]")
+            sys.exit(1)
+        db.tag_cell(cell_id, tags)
+        print(f"Tagged cell {cell_id} with: {', '.join(tags)}")
+
+    elif cmd == "search-tag":
+        tag = sys.argv[2] if len(sys.argv) > 2 else ""
+        if not tag:
+            print("Usage: oc-memory search-tag <tag>")
+            sys.exit(1)
+        results = db.search_by_tag(tag)
+        if results:
+            for r in results:
+                tags_str = r.get("tags", "[]")
+                print(
+                    f"[{r['id']}] [{r['cell_type']}] scene:{r['scene']} "
+                    f"sal:{r['salience']:.2f} tags:{tags_str} — {r['content'][:120]}"
+                )
+        else:
+            print(f"No cells tagged '{tag}'.")
 
     elif cmd == "forget":
         cell_id = int(sys.argv[2])

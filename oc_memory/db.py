@@ -29,6 +29,7 @@ class MemoryDB:
                 salience REAL DEFAULT 0.5,
                 content TEXT NOT NULL,
                 source TEXT DEFAULT '',
+                tags TEXT DEFAULT '[]',
                 embedding BLOB,
                 access_count INTEGER DEFAULT 0,
                 created_at TEXT NOT NULL,
@@ -48,19 +49,29 @@ class MemoryDB:
             CREATE INDEX IF NOT EXISTS idx_cells_type ON mem_cells(cell_type);
         """)
 
-        # FTS5 virtual table
+        # Migration: add tags column if missing
+        cols = {r[1] for r in self.db.execute("PRAGMA table_info(mem_cells)").fetchall()}
+        if "tags" not in cols:
+            self.db.execute("ALTER TABLE mem_cells ADD COLUMN tags TEXT DEFAULT '[]'")
+
+        # FTS5 virtual table — rebuild if schema changed (tags added)
         try:
             self.db.execute("SELECT * FROM mem_fts LIMIT 0")
+            # Check if FTS includes tags column
+            fts_cols = [r[1] for r in self.db.execute("PRAGMA table_info(mem_fts)").fetchall()]
+            if "tags" not in fts_cols:
+                self.db.execute("DROP TABLE mem_fts")
+                raise sqlite3.OperationalError("rebuild")
         except sqlite3.OperationalError:
             self.db.execute("""
                 CREATE VIRTUAL TABLE mem_fts
-                USING fts5(content, scene, cell_type)
+                USING fts5(content, scene, cell_type, tags)
             """)
             # Backfill from existing data
-            for row in self.db.execute("SELECT id, content, scene, cell_type FROM mem_cells"):
+            for row in self.db.execute("SELECT id, content, scene, cell_type, tags FROM mem_cells"):
                 self.db.execute(
-                    "INSERT INTO mem_fts(rowid, content, scene, cell_type) VALUES (?, ?, ?, ?)",
-                    (row["id"], row["content"], row["scene"], row["cell_type"]),
+                    "INSERT INTO mem_fts(rowid, content, scene, cell_type, tags) VALUES (?, ?, ?, ?, ?)",
+                    (row["id"], row["content"], row["scene"], row["cell_type"], row["tags"] or "[]"),
                 )
 
         self.db.commit()
@@ -70,17 +81,20 @@ class MemoryDB:
         now = datetime.utcnow().isoformat()
         content = cell["content"] if isinstance(cell["content"], str) else json.dumps(cell["content"])
         emb_blob = embedding.tobytes() if embedding is not None else None
+        tags = cell.get("tags", [])
+        tags_json = json.dumps(tags) if isinstance(tags, list) else tags
 
         cursor = self.db.execute(
             """INSERT INTO mem_cells
-               (scene, cell_type, salience, content, source, embedding, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+               (scene, cell_type, salience, content, source, tags, embedding, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 cell["scene"],
                 cell.get("cell_type", "fact"),
                 cell.get("salience", 0.5),
                 content,
                 cell.get("source", ""),
+                tags_json,
                 emb_blob,
                 now,
                 now,
@@ -88,11 +102,46 @@ class MemoryDB:
         )
         row_id = cursor.lastrowid
         self.db.execute(
-            "INSERT INTO mem_fts(rowid, content, scene, cell_type) VALUES (?, ?, ?, ?)",
-            (row_id, content, cell["scene"], cell.get("cell_type", "fact")),
+            "INSERT INTO mem_fts(rowid, content, scene, cell_type, tags) VALUES (?, ?, ?, ?, ?)",
+            (row_id, content, cell["scene"], cell.get("cell_type", "fact"), tags_json),
         )
         self.db.commit()
         return row_id
+
+    def tag_cell(self, cell_id: int, tags: list[str]):
+        """Add tags to a cell (merges with existing, deduplicates)."""
+        row = self.db.execute("SELECT tags FROM mem_cells WHERE id = ?", (cell_id,)).fetchone()
+        if not row:
+            return
+        existing = json.loads(row["tags"] or "[]")
+        merged = sorted(set(existing + [t.lower().strip() for t in tags]))
+        tags_json = json.dumps(merged)
+        now = datetime.utcnow().isoformat()
+        self.db.execute(
+            "UPDATE mem_cells SET tags = ?, updated_at = ? WHERE id = ?",
+            (tags_json, now, cell_id),
+        )
+        # Update FTS
+        content_row = self.db.execute(
+            "SELECT content, scene, cell_type FROM mem_cells WHERE id = ?", (cell_id,)
+        ).fetchone()
+        self.db.execute("DELETE FROM mem_fts WHERE rowid = ?", (cell_id,))
+        self.db.execute(
+            "INSERT INTO mem_fts(rowid, content, scene, cell_type, tags) VALUES (?, ?, ?, ?, ?)",
+            (cell_id, content_row["content"], content_row["scene"], content_row["cell_type"], tags_json),
+        )
+        self.db.commit()
+
+    def search_by_tag(self, tag: str, limit: int = 20) -> list[dict]:
+        """Find cells matching a tag."""
+        pattern = f'%"{tag.lower().strip()}"%'
+        rows = self.db.execute(
+            """SELECT id, scene, cell_type, salience, content, source, tags, created_at
+               FROM mem_cells WHERE tags LIKE ?
+               ORDER BY salience DESC LIMIT ?""",
+            (pattern, limit),
+        ).fetchall()
+        return [dict(r) for r in rows]
 
     def update_embedding(self, cell_id: int, embedding: np.ndarray):
         """Update the embedding for an existing cell."""
@@ -110,7 +159,7 @@ class MemoryDB:
 
         fts_query = " OR ".join(tokens)
         rows = self.db.execute(
-            """SELECT m.id, m.scene, m.cell_type, m.salience, m.content, m.source, m.created_at
+            """SELECT m.id, m.scene, m.cell_type, m.salience, m.content, m.source, m.tags, m.created_at
                FROM mem_fts f
                JOIN mem_cells m ON f.rowid = m.id
                WHERE mem_fts MATCH ?
@@ -170,7 +219,7 @@ class MemoryDB:
         """Get scene metadata and its cells."""
         row = self.db.execute("SELECT * FROM mem_scenes WHERE scene = ?", (scene,)).fetchone()
         cells = self.db.execute(
-            "SELECT id, scene, cell_type, salience, content, source, access_count, created_at "
+            "SELECT id, scene, cell_type, salience, content, source, tags, access_count, created_at "
             "FROM mem_cells WHERE scene = ? ORDER BY salience DESC",
             (scene,),
         ).fetchall()
@@ -231,7 +280,7 @@ class MemoryDB:
         return [
             dict(r)
             for r in self.db.execute(
-                "SELECT id, scene, cell_type, salience, content, source, access_count, "
+                "SELECT id, scene, cell_type, salience, content, source, tags, access_count, "
                 "created_at, updated_at FROM mem_cells ORDER BY id"
             ).fetchall()
         ]

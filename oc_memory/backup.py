@@ -64,6 +64,7 @@ class BackupManager:
                 lines.append(
                     f"- [{cell['cell_type']}] (sal: {cell['salience']:.2f}, accessed: {cell['access_count']}x) "
                     f"{cell['content']}"
+                    + (f" `tags:{cell.get('tags', '[]')}`" if cell.get("tags") and cell.get("tags") != "[]" else "")
                 )
 
             (self.export_dir / f"scene-{safe_name}.md").write_text("\n".join(lines) + "\n")
