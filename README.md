@@ -111,6 +111,12 @@ See [docs/openclaw-integration.md](docs/openclaw-integration.md) for detailed in
 - [Backup Strategy](docs/backup.md) — export, git, and remote backup
 - [Design Notes](docs/design.md) — architecture decisions and future directions
 
+## Skills
+
+oc-memory ships with an OpenClaw skill for memory recall:
+
+- **[recall](skills/recall/SKILL.md)** — multi-layer memory retrieval (structured DB → markdown → grep). Drop it into your agent's skills directory or install via OpenClaw.
+
 ## License
 
 MIT
