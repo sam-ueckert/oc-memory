@@ -15,15 +15,16 @@ OpenClaw agents wake up fresh each session. Markdown files provide basic continu
 ## Architecture
 
 ```
-Agent conversations / markdown files
-        ↓ extract (LLM)
-Typed memory cells (fact, decision, task, preference, ...)
-        ↓ store + embed
-SQLite DB (FTS5 + vector blobs)
-        ↓ search
-Relevant context for current task
-        ↓ export
-JSON + Markdown → git push
+Inbound message
+    ├──→ oc-memory-recall hook: FTS search → inject context (auto)
+    ▼
+Agent responds (with memory context)
+    ├──→ oc-memory-capture hook: store exchange → SQLite (auto)
+    ▼
+Batch (cron):
+    oc-memory embed       → vector embeddings
+    oc-memory consolidate → structured extraction
+    oc-memory export      → git backup
 ```
 
 ## Quick Start
@@ -88,6 +89,7 @@ oc-memory stats
 | `risk` | Potential problems, warnings |
 | `plan` | Future intentions, project plans |
 | `lesson` | Lessons learned from experience |
+| `exchange` | Raw conversation exchange (auto-captured by hooks) |
 
 ## Configuration
 
@@ -99,6 +101,27 @@ All config via environment variables:
 | `OC_MEMORY_EXPORT` | `~/.openclaw/workspace/memory-export` | Export directory for git |
 | `OLLAMA_URL` | `http://localhost:11434` | Ollama API endpoint |
 | `OC_MEMORY_BACKUP_HOST` | *(none)* | SSH host for remote SQLite backup |
+
+## OpenClaw Hooks (Automatic Memory)
+
+oc-memory ships with two OpenClaw hooks for fully automatic memory:
+
+- **🧠 oc-memory-recall** — searches memory on every inbound message, injects context
+- **📝 oc-memory-capture** — stores exchanges after every outbound message
+
+Install in 30 seconds:
+
+```bash
+cp -r hooks/oc-memory-recall ~/.openclaw/hooks/
+cp -r hooks/oc-memory-capture ~/.openclaw/hooks/
+openclaw hooks enable oc-memory-recall
+openclaw hooks enable oc-memory-capture
+openclaw gateway restart
+```
+
+This gives you the same auto-recall + auto-capture as cloud plugins (Supermemory, Mem0) but 100% local, zero cost, and <1ms search latency.
+
+See [hooks/README.md](hooks/README.md) for full details, configuration, and architecture.
 
 ## Wiring into OpenClaw
 

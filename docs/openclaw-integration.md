@@ -198,3 +198,79 @@ During a session, the agent's workflow becomes:
 5. **Heartbeat:** Periodic `oc-memory export` + git push
 
 The SQLite DB is the fast structured layer. Markdown files remain the human-readable backup. Both coexist.
+
+## Automatic Memory via Hooks (Recommended)
+
+oc-memory includes OpenClaw hooks that automate recall and capture with zero
+agent-side configuration.
+
+### Install hooks
+
+```bash
+cp -r hooks/oc-memory-recall ~/.openclaw/hooks/
+cp -r hooks/oc-memory-capture ~/.openclaw/hooks/
+openclaw hooks enable oc-memory-recall
+openclaw hooks enable oc-memory-capture
+openclaw gateway restart
+```
+
+### How they work
+
+**oc-memory-recall** (`message:received`):
+1. Takes inbound message text
+2. Runs `oc-memory search` (FTS5, <1ms)
+3. Injects results as context before the agent responds
+4. Agent sees past decisions, facts, preferences automatically
+
+**oc-memory-capture** (`message:sent`):
+1. Takes outbound response text
+2. Skips trivial responses (heartbeats, NO_REPLY, short messages)
+3. Stores as `exchange` cell in `conv-YYYY-MM-DD` scene
+4. Raw text only — embedding/extraction deferred to batch
+
+### Batch processing
+
+The hooks handle the hot path. Run these on a schedule for full features:
+
+```bash
+# Embed new cells for semantic search (every few hours)
+oc-memory embed
+
+# Extract structured facts from raw exchanges (daily)
+oc-memory consolidate
+
+# Decay old low-access memories (weekly)
+oc-memory decay
+
+# Export for git backup (daily)
+oc-memory export
+```
+
+### Architecture with hooks
+
+```
+┌──────────────────────────────────────────────────┐
+│                 OpenClaw Gateway                  │
+│                                                  │
+│  message:received ──→ oc-memory-recall hook       │
+│     │                    │                        │
+│     │               oc-memory search (FTS)        │
+│     │                    │                        │
+│     ▼                    ▼                        │
+│  Agent turn  ◄── [injected memory context]       │
+│     │                                             │
+│     ▼                                             │
+│  message:sent ───→ oc-memory-capture hook         │
+│                       │                           │
+│                  oc-memory store                   │
+└───────────────────────┼──────────────────────────┘
+                        ▼
+┌──────────────────────────────────────────────────┐
+│              oc-memory (Python)                  │
+│                                                  │
+│  db.py ←→ SQLite + FTS5                         │
+│  embeddings.py ←→ Ollama (nomic-embed-text)     │
+│  extractor.py ←→ Ollama (any local LLM)         │
+│  backup.py → JSON + markdown export             │
+└──────────────────────────────────────────────────┘
+```
