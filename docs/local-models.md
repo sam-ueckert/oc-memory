@@ -1,21 +1,45 @@
 # Local Model Setup
 
-oc-memory uses [Ollama](https://ollama.com) for two optional features:
+oc-memory uses two optional backends for AI features:
 
-- **Vector embeddings** — semantic similarity search (via `nomic-embed-text`)
-- **LLM extraction** — automatic parsing of text into typed memory cells (via `llama3.2:3b` or similar)
+- **Vector embeddings** — semantic similarity search
+- **LLM extraction** — automatic parsing of text into typed memory cells (via Ollama + `llama3.2:3b`)
 
-Both are optional. Without Ollama, oc-memory falls back to FTS5 full-text search, which is fast and works well for keyword-based recall.
+## Embedding Backends
+
+### Primary: ONNX bge-small-en-v1.5 (default, zero config)
+
+oc-memory ships with an ONNX embedding backend baked into the Docker image. **No external service required.**
+
+- Model: `BAAI/bge-small-en-v1.5`
+- Dimensions: **384**
+- Runtime: ONNX Runtime (CPU-only, no GPU needed)
+- Memory: ~120MB model weight, works on 512MB RAM
+- Speed: ~50–200ms per embedding on a single CPU core
+
+This is the default. No configuration needed — just run oc-memory and embeddings work.
+
+### Optional: Ollama nomic-embed-text
+
+If you prefer Ollama for embeddings (e.g., to use a different model or share an existing Ollama instance), set:
+
+```bash
+export OLLAMA_URL=http://localhost:11434
+```
+
+When `OLLAMA_URL` is set, oc-memory switches to the Ollama backend using `nomic-embed-text` (768-dim).
+
+> ⚠️ **Dimension mismatch**: ONNX produces 384-dim vectors; Ollama nomic-embed-text produces 768-dim vectors. Do not mix backends on the same database — re-embed all cells if you switch.
 
 ## System Requirements
 
-### Minimum (FTS only, no Ollama)
+### Minimum (ONNX embeddings, no Ollama)
 
 - 1 CPU core, 512MB RAM
 - Python 3.11+
-- Works on any Linux, macOS, or WSL
+- Works on any Linux, macOS, or WSL — including low-power devices (Raspberry Pi, VPS)
 
-### Recommended (with Ollama)
+### With Ollama (extraction + optional Ollama embeddings)
 
 | Component | Minimum | Recommended |
 |-----------|---------|-------------|
@@ -24,7 +48,7 @@ Both are optional. Without Ollama, oc-memory falls back to FTS5 full-text search
 | Disk | 5GB free | 10GB+ |
 | GPU | Not required | NVIDIA GPU speeds up inference significantly |
 
-Ollama models are CPU-capable but slow. A dedicated machine with more RAM is ideal if you plan to use extraction and embedding heavily.
+Ollama models are CPU-capable but slow. A dedicated machine with more RAM is ideal if you plan to use extraction heavily.
 
 ### Split Architecture
 
@@ -32,11 +56,12 @@ If your OpenClaw host is resource-constrained (e.g., a 2GB VPS), run Ollama on a
 
 ```
 ┌─────────────┐         ┌──────────────────┐
-│  OCP (VPS)  │   SSH   │  GPU/Big Server   │
+│  OCP (VPS)  │   HTTP  │  GPU/Big Server   │
 │  OpenClaw   │ ──────> │  Ollama           │
-│  oc-memory  │   HTTP  │  nomic-embed-text │
-│  SQLite DB  │ <────── │  llama3.2:3b      │
-└─────────────┘         └──────────────────┘
+│  oc-memory  │         │  llama3.2:3b      │
+│  SQLite DB  │ <────── │  (extraction)     │
+│  ONNX embed │         └──────────────────┘
+└─────────────┘
 ```
 
 Set `OLLAMA_URL` to point at the remote host (e.g., `http://my-gpu-server:11434`). If using SSH tunnels:
@@ -47,7 +72,9 @@ ssh -L 11434:localhost:11434 user@my-gpu-server -N &
 export OLLAMA_URL=http://localhost:11434
 ```
 
-## Installing Ollama
+## Installing Ollama (for LLM extraction)
+
+Ollama is only needed if you want automatic LLM-based extraction of structured cells from raw text.
 
 ### Linux
 
@@ -69,23 +96,9 @@ ollama --version
 ollama serve &  # start the server (or use systemd)
 ```
 
-## Required Models
+## Models
 
-### nomic-embed-text (embeddings)
-
-768-dimensional embeddings, ~274MB download.
-
-```bash
-ollama pull nomic-embed-text
-```
-
-Test:
-```bash
-curl http://localhost:11434/api/embed \
-  -d '{"model":"nomic-embed-text","input":"test embedding"}'
-```
-
-### llama3.2:3b (extraction)
+### llama3.2:3b (extraction — required for `oc-memory extract`)
 
 3B parameter model for parsing text into structured cells. ~2GB download.
 
@@ -99,16 +112,34 @@ curl http://localhost:11434/api/generate \
   -d '{"model":"llama3.2:3b","prompt":"Say hello","stream":false}'
 ```
 
-### Alternative Models
+### nomic-embed-text (Ollama embeddings — optional)
 
-You can swap models via environment variables:
+768-dimensional embeddings, ~274MB download. Only needed if you set `OLLAMA_URL` and want Ollama to handle embeddings instead of the built-in ONNX backend.
+
+```bash
+ollama pull nomic-embed-text
+```
+
+Test:
+```bash
+curl http://localhost:11434/api/embed \
+  -d '{"model":"nomic-embed-text","input":"test embedding"}'
+```
+
+### Model Comparison
+
+| Backend | Model | Dimensions | RAM | Config |
+|---------|-------|-----------|-----|--------|
+| ONNX (default) | bge-small-en-v1.5 | **384** | ~512MB | none |
+| Ollama (opt-in) | nomic-embed-text | 768 | ~4GB | set `OLLAMA_URL` |
+
+### Alternative Extraction Models
+
+You can swap the extraction model via environment variables:
 
 | Variable | Default | Alternatives |
 |----------|---------|-------------|
-| Embedding model | `nomic-embed-text` | `mxbai-embed-large`, `all-minilm` |
 | Extraction model | `llama3.2:3b` | `llama3.2:1b` (faster, less accurate), `mistral` (7B, better quality) |
-
-Smaller models are faster but extract fewer/lower-quality cells. Larger models are more thorough but need more RAM and time.
 
 ## Running Ollama as a Service
 
@@ -160,13 +191,17 @@ systemctl --user enable --now ollama
 
 ## Troubleshooting
 
-**"Ollama not available"** — The server isn't running or isn't reachable at the configured URL.
+**"Ollama not available"** — The server isn't running or isn't reachable at the configured URL. Only needed for extraction.
 ```bash
 curl http://localhost:11434/api/tags  # should return model list
 ```
 
-**Slow embedding/extraction** — Normal on CPU. nomic-embed-text takes ~1-3s per embedding on CPU. Extraction with llama3.2:3b takes 10-60s per text block. Use FTS search as the fast default.
+**ONNX embeddings slow** — Normal on very low-end hardware. bge-small-en-v1.5 is one of the fastest models available (~50ms on a Pi 4).
 
-**Out of memory** — Reduce model size (`llama3.2:1b` instead of `:3b`) or increase swap. Ollama loads models into RAM.
+**Slow extraction** — Normal on CPU. llama3.2:3b takes 10–60s per text block. Use FTS search as the fast default — extraction is a background/batch operation.
+
+**Out of memory (Ollama)** — Reduce model size (`llama3.2:1b` instead of `:3b`) or increase swap. Ollama loads models into RAM.
 
 **Remote Ollama unreachable** — Check firewall rules. Ollama binds to `127.0.0.1` by default. Set `OLLAMA_HOST=0.0.0.0` to listen on all interfaces, or use an SSH tunnel.
+
+**Switched backends, search broken** — If you switch from ONNX (384-dim) to Ollama (768-dim) or vice versa, existing vectors are incompatible. Re-embed all cells: `oc-memory embed --force`.

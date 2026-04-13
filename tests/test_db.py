@@ -24,10 +24,10 @@ def test_insert_and_search_fts(db):
 
 
 def test_vector_search(db):
-    emb1 = np.random.randn(768).astype(np.float32)
+    emb1 = np.random.randn(384).astype(np.float32)
     emb1 /= np.linalg.norm(emb1)
 
-    emb2 = np.random.randn(768).astype(np.float32)
+    emb2 = np.random.randn(384).astype(np.float32)
     emb2 /= np.linalg.norm(emb2)
 
     db.insert_cell({"scene": "a", "cell_type": "fact", "content": "hello"}, embedding=emb1)
@@ -81,3 +81,48 @@ def test_access_count_increments_on_fts(db):
     db.search_fts("searchterm")
     row = db.db.execute("SELECT access_count FROM mem_cells").fetchone()
     assert row[0] == 2
+
+
+def test_tag_cell(db):
+    cell_id = db.insert_cell({"scene": "test", "cell_type": "fact", "content": "taggable content"})
+    db.tag_cell(cell_id, ["foo", "bar"])
+
+    results = db.search_by_tag("foo")
+    assert len(results) == 1
+    assert results[0]["id"] == cell_id
+
+    results_bar = db.search_by_tag("bar")
+    assert len(results_bar) == 1
+    assert results_bar[0]["id"] == cell_id
+
+
+def test_search_hybrid(db):
+    emb1 = np.random.randn(384).astype(np.float32)
+    emb1 /= np.linalg.norm(emb1)
+
+    emb2 = np.random.randn(384).astype(np.float32)
+    emb2 /= np.linalg.norm(emb2)
+
+    db.insert_cell(
+        {"scene": "a", "cell_type": "fact", "salience": 0.8, "content": "alpha keyword result"},
+        embedding=emb1,
+    )
+    db.insert_cell(
+        {"scene": "b", "cell_type": "fact", "salience": 0.8, "content": "beta keyword result"},
+        embedding=emb2,
+    )
+
+    # With embedding provided — hybrid (vector + FTS) path
+    results = db.search_hybrid("keyword", query_embedding=emb1, limit=5)
+    assert len(results) >= 1
+
+    # FTS-only fallback (no embedding)
+    fts_results = db.search_hybrid("keyword", limit=5)
+    assert len(fts_results) >= 1
+
+
+def test_dedup(db):
+    db.insert_cell({"scene": "test", "cell_type": "fact", "content": "duplicate content here"})
+    db.insert_cell({"scene": "test", "cell_type": "fact", "content": "duplicate content here"})
+    count = db.db.execute("SELECT COUNT(*) FROM mem_cells").fetchone()[0]
+    assert count == 1

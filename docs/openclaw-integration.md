@@ -40,43 +40,9 @@ Create a shell wrapper at `~/bin/mem` that your agent can call quickly:
 
 ```bash
 #!/bin/bash
-# ~/bin/mem — Quick memory interface
-export OC_MEMORY_DB="${OC_MEMORY_DB:-$HOME/.openclaw/memory.db}"
-export OLLAMA_URL="${OLLAMA_URL:-http://localhost:11434}"
-
-case "${1:-}" in
-    search)
-        shift
-        # FTS-only search (fast, no Ollama dependency)
-        python3 -c "
-import sys, os
-from oc_memory.db import MemoryDB
-db = MemoryDB(os.environ['OC_MEMORY_DB'])
-query = ' '.join(sys.argv[1:])
-results = db.search_fts(query, limit=15)
-if not results:
-    print('No results.')
-else:
-    for r in results:
-        print(f'[{r[\"id\"]}] [{r[\"cell_type\"]}] scene:{r[\"scene\"]} sal:{r[\"salience\"]:.2f} — {r[\"content\"][:150]}')
-" "$@"
-        ;;
-    quick-store)
-        shift
-        SCENE="$1"; TYPE="$2"; SAL="$3"; shift 3; CONTENT="$*"
-        python3 -c "
-import sys, os
-from oc_memory.db import MemoryDB
-db = MemoryDB(os.environ['OC_MEMORY_DB'])
-cell = {'scene': sys.argv[1], 'cell_type': sys.argv[2], 'salience': float(sys.argv[3]), 'content': ' '.join(sys.argv[4:])}
-rid = db.insert_cell(cell)
-print(f'Stored cell {rid}: [{cell[\"cell_type\"]}] {cell[\"scene\"]} — {cell[\"content\"][:80]}')
-" "$SCENE" "$TYPE" "$SAL" "$CONTENT"
-        ;;
-    *)
-        exec oc-memory "$@"
-        ;;
-esac
+# ~/bin/mem — Quick memory interface (thin wrapper around oc-memory CLI)
+export OC_MEMORY_DB="${OC_MEMORY_DB:-$HOME/.oc-memory/memory.db}"
+exec oc-memory "$@"
 ```
 
 ```bash
@@ -136,8 +102,9 @@ Add the memory system reference:
 ## Memory System (oc-memory)
 
 - **CLI:** `~/bin/mem`
-- **DB:** `~/.openclaw/memory.db`
-- **Ollama:** `http://localhost:11434` (optional, for embeddings/extraction)
+- **DB:** `~/.oc-memory/memory.db`
+- **Embeddings:** ONNX bge-small-en-v1.5 (built-in, 384-dim; set `OLLAMA_URL` for Ollama)
+- **Ollama:** optional, for LLM extraction (`llama3.2:3b`)
 
 ### Quick reference
 \`\`\`bash
@@ -269,7 +236,8 @@ oc-memory export
 │              oc-memory (Python)                  │
 │                                                  │
 │  db.py ←→ SQLite + FTS5                         │
-│  embeddings.py ←→ Ollama (nomic-embed-text)     │
+│  embeddings.py ←→ ONNX bge-small-en-v1.5 (default) │
+│                    or Ollama nomic-embed-text (opt-in) │
 │  extractor.py ←→ Ollama (any local LLM)         │
 │  backup.py → JSON + markdown export             │
 └──────────────────────────────────────────────────┘

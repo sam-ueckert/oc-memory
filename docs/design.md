@@ -15,9 +15,11 @@ oc-memory adds a structured layer: typed cells with salience scores, grouped by 
 - Single-file database — easy to backup, copy, restore
 - WAL mode for concurrent reads
 
-### Embeddings are optional
+### Embeddings are built-in
 
-Vector search via Ollama is a nice-to-have, not a requirement. FTS5 handles 90% of recall queries well. This means oc-memory works on minimal hardware (1 core, 512MB) without Ollama.
+oc-memory ships with an ONNX embedding backend (bge-small-en-v1.5, 384-dim) that works out of the box — no external service required. FTS5 handles 90% of recall queries well, but vector search is now available on minimal hardware (1 core, 512MB) too.
+
+Ollama embeddings are opt-in: set `OLLAMA_URL` to switch to the Ollama backend (nomic-embed-text, 768-dim). Ollama is still used for LLM-based extraction (`oc-memory extract`).
 
 ### Memory cells, not documents
 
