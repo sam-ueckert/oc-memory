@@ -1,144 +1,201 @@
 # oc-memory
 
-Self-organizing agent memory for [OpenClaw](https://github.com/openclaw/openclaw). Gives your agent structured, searchable long-term memory backed by SQLite, full-text search, vector embeddings, and LLM-driven extraction.
+Persistent memory MCP server for [Claude Code](https://claude.ai/code), [Cursor](https://cursor.sh), and [OpenClaw](https://github.com/openclaw/openclaw).
+
+Gives your AI assistant structured, searchable long-term memory backed by SQLite, full-text search, and local vector embeddings — with zero external API dependencies.
 
 ## Why
 
-OpenClaw agents wake up fresh each session. Markdown files provide basic continuity, but as context grows, finding the right memory becomes slow and imprecise. oc-memory adds a structured layer:
+AI assistants forget everything between sessions. `oc-memory` adds a persistent layer:
 
-- **SQLite + FTS5** — fast full-text search across all memories, zero external dependencies
-- **Vector embeddings** — semantic search via Ollama (optional, gracefully degrades to FTS)
-- **LLM extraction** — automatically parse conversations and notes into typed, salience-scored memory cells
-- **Scene grouping** — memories clustered by topic with consolidated summaries
-- **Git-friendly export** — JSON + markdown exports for version-controlled backup
+- **SQLite + FTS5** — fast full-text search, zero external dependencies
+- **ONNX embeddings** — semantic search via bge-small-en-v1.5, runs locally, no GPU needed
+- **MCP protocol** — works with any MCP-compatible client (Claude Code, Cursor, OpenClaw, etc.)
+- **12 memory tools** — store, search, tag, decay, export, consolidate
+- **Docker-ready** — one command to run as a persistent service
+
+## Quick Start
+
+### Option A: Docker (recommended)
+
+```bash
+git clone https://github.com/sam-ueckert/oc-memory.git
+cd oc-memory
+docker compose up -d
+```
+
+The server runs at `http://localhost:8765/sse`.
+
+### Option B: Local install
+
+```bash
+git clone https://github.com/sam-ueckert/oc-memory.git
+cd oc-memory
+bash setup.sh
+```
+
+`setup.sh` installs the package, downloads the ONNX model (~24MB), and prints your MCP config.
+
+## Claude Code Integration
+
+Add to `~/.claude.json` (or run `bash setup.sh` which offers to patch it automatically):
+
+```json
+{
+  "mcpServers": {
+    "oc-memory": {
+      "command": "oc-memory-mcp"
+    }
+  }
+}
+```
+
+Or point at the Docker server (HTTP/SSE):
+
+```json
+{
+  "mcpServers": {
+    "oc-memory": {
+      "type": "sse",
+      "url": "http://localhost:8765/sse"
+    }
+  }
+}
+```
+
+Then restart Claude Code. The memory tools will be available in every session.
+
+## Cursor Integration
+
+Create or update `.cursor/mcp.json` (or `~/.cursor/mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "oc-memory": {
+      "command": "oc-memory-mcp"
+    }
+  }
+}
+```
+
+## OpenClaw Integration
+
+Add under the `mcp` key in `openclaw.json`:
+
+```json
+{
+  "mcp": {
+    "servers": [
+      {
+        "name": "oc-memory",
+        "transport": "stdio",
+        "command": "oc-memory-mcp",
+        "args": []
+      }
+    ]
+  }
+}
+```
+
+Run `oc-memory setup` at any time to regenerate these snippets for your current install path.
+
+## CLI Usage
+
+```bash
+# Store a memory
+oc-memory store --scene myproject --type decision --salience 0.8 "Chose PostgreSQL over MySQL for better JSON support"
+
+# Search
+oc-memory search "database choice"
+
+# Stats
+oc-memory stats
+
+# List scenes
+oc-memory scenes
+
+# Tag a cell
+oc-memory tag <id> database architecture
+
+# Decay old low-access memories
+oc-memory decay
+
+# Export to markdown + JSON
+oc-memory export
+```
+
+### Quick store (no flags, scene required)
+
+```bash
+oc-memory quick-store myproject fact 0.7 "API runs on port 8080"
+```
+
+## Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `OC_MEMORY_DB` | `~/.oc-memory/memory.db` | SQLite database path |
+| `OC_MEMORY_EXPORT` | `~/.oc-memory/export` | Export directory |
+| `OC_MEMORY_BACKEND` | `onnx` | Embedding backend: `onnx` or `ollama` |
+| `OLLAMA_URL` | `http://localhost:11434` | Ollama endpoint (if using ollama backend) |
 
 ## Architecture
 
 ```
-Inbound message
-    ├──→ oc-memory-recall hook: FTS search → inject context (auto)
-    ▼
-Agent responds (with memory context)
-    ├──→ oc-memory-capture hook: store exchange → SQLite (auto)
-    ▼
-Batch (cron):
-    oc-memory embed       → vector embeddings
-    oc-memory consolidate → structured extraction
-    oc-memory export      → git backup
+Your AI assistant
+    │
+    ▼ (MCP tools)
+oc-memory MCP server
+    │
+    ├── SQLite + FTS5 ── fast full-text search
+    ├── ONNX embeddings ── semantic similarity (bge-small-en-v1.5, local)
+    └── memory.db ──── ~/.oc-memory/memory.db (or Docker volume)
 ```
 
-## Quick Start
+Memory is stored as typed **cells** with salience scores:
 
-```bash
-# Install
-pip install -e .
-# or with uv:
-uv sync
+| Type | When to use |
+|------|-------------|
+| `fact` | Observable truths, config details, measurements |
+| `decision` | Choices made and their reasoning |
+| `preference` | User or agent preferences |
+| `task` | Pending work, todos |
+| `risk` | Warnings, known issues |
+| `plan` | Future intentions |
+| `lesson` | Learned from mistakes |
 
-# Store a memory directly
-oc-memory store '[{"scene":"setup","cell_type":"decision","salience":0.8,"content":"Using SQLite for memory storage"}]'
+## MCP Tool Reference
 
-# Extract memories from text (requires Ollama)
-oc-memory extract "We decided to deploy on a 2-core VPS with 2GB RAM"
+| Tool | Description |
+|------|-------------|
+| `memory_store` | Store a memory cell (content, type, scene, salience, tags) |
+| `memory_search` | Hybrid search — vector + FTS5 |
+| `memory_search_tag` | Search by tag |
+| `memory_forget` | Delete a cell by ID |
+| `memory_tag` | Add tags to a cell |
+| `memory_stats` | Database statistics |
+| `memory_scenes` | List all scenes |
+| `memory_scene` | Get scene details and summary |
+| `memory_decay` | Fade old low-access memories |
+| `memory_export` | Export to markdown + JSON |
+| `memory_digest` | Get daily digest of recent memories |
+| `memory_consolidate` | Consolidate scene summaries with LLM |
 
-# Search
-oc-memory search "deployment infrastructure"
+## Self-Hosting (Kubernetes)
 
-# Stats
-oc-memory stats
-```
+See [`k8s/memory-server.yaml`](k8s/memory-server.yaml) for a minimal k3s/k8s deployment. Update the image reference and storage class for your cluster.
+
+## OpenClaw Hooks
+
+For automatic recall and capture on every conversation turn, see [`hooks/README.md`](hooks/README.md).
 
 ## Requirements
 
-- **Python 3.11+**
-- **SQLite with FTS5** (included in standard Python builds)
-
-### Optional (for full features)
-
-- **Ollama** — for embeddings and LLM extraction (see [Local Model Setup](docs/local-models.md))
-- **SSH access to a remote host** — for SQLite backups (see [Backup](docs/backup.md))
-
-## Commands
-
-| Command | Description |
-|---------|-------------|
-| `store <json>` | Store pre-extracted memory cells |
-| `store-stdin` | Store cells from stdin (JSON) |
-| `extract <text>` | Extract cells from text using local LLM |
-| `extract-file <path>` | Extract cells from a file |
-| `search <query>` | Search memories (vector + FTS fallback) |
-| `scenes` | List all scenes |
-| `scene <name>` | Get scene details and cells |
-| `consolidate [scene]` | Generate LLM summaries for scenes |
-| `embed` | Embed all cells missing embeddings |
-| `export` | Export markdown + JSON for git |
-| `backup` | Full backup (export + optional remote SQLite copy) |
-| `restore <path>` | Restore from JSON export |
-| `stats` | Show memory statistics |
-| `forget <id>` | Delete a specific cell |
-| `decay` | Decay salience of old, rarely-accessed memories |
-
-## Memory Cell Types
-
-| Type | Description |
-|------|-------------|
-| `fact` | Factual information, observations |
-| `decision` | Choices made and their reasoning |
-| `preference` | User or agent preferences |
-| `task` | Things to do, pending work |
-| `risk` | Potential problems, warnings |
-| `plan` | Future intentions, project plans |
-| `lesson` | Lessons learned from experience |
-| `exchange` | Raw conversation exchange (auto-captured by hooks) |
-
-## Configuration
-
-All config via environment variables:
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `OC_MEMORY_DB` | `~/.openclaw/memory.db` | SQLite database path |
-| `OC_MEMORY_EXPORT` | `~/.openclaw/workspace/memory-export` | Export directory for git |
-| `OLLAMA_URL` | `http://localhost:11434` | Ollama API endpoint |
-| `OC_MEMORY_BACKUP_HOST` | *(none)* | SSH host for remote SQLite backup |
-
-## OpenClaw Hooks (Automatic Memory)
-
-oc-memory ships with two OpenClaw hooks for fully automatic memory:
-
-- **🧠 oc-memory-recall** — searches memory on every inbound message, injects context
-- **📝 oc-memory-capture** — stores exchanges after every outbound message
-
-Install in 30 seconds:
-
-```bash
-cp -r hooks/oc-memory-recall ~/.openclaw/hooks/
-cp -r hooks/oc-memory-capture ~/.openclaw/hooks/
-openclaw hooks enable oc-memory-recall
-openclaw hooks enable oc-memory-capture
-openclaw gateway restart
-```
-
-This gives you the same auto-recall + auto-capture as cloud plugins (Supermemory, Mem0) but 100% local, zero cost, and <1ms search latency.
-
-See [hooks/README.md](hooks/README.md) for full details, configuration, and architecture.
-
-## Wiring into OpenClaw
-
-See [docs/openclaw-integration.md](docs/openclaw-integration.md) for detailed instructions on connecting oc-memory to your OpenClaw agent.
-
-## Docs
-
-- [Local Model Setup](docs/local-models.md) — installing Ollama, models, and system requirements
-- [OpenClaw Integration](docs/openclaw-integration.md) — wiring memory into your agent
-- [Backup Strategy](docs/backup.md) — export, git, and remote backup
-- [Design Notes](docs/design.md) — architecture decisions and future directions
-
-## Skills
-
-oc-memory ships with an OpenClaw skill for memory recall:
-
-- **[recall](skills/recall/SKILL.md)** — multi-layer memory retrieval (structured DB → markdown → grep). Drop it into your agent's skills directory or install via OpenClaw.
+- Python 3.11+
+- Docker (for Docker install) — or Python environment for local install
+- No GPU required — ONNX embeddings run on CPU
+- Ollama optional (for `memory_consolidate` LLM extraction)
 
 ## License
 

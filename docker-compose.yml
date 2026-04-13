@@ -1,0 +1,17 @@
+services:
+  oc-memory:
+    build: .
+    ports:
+      - "8765:8765"
+    volumes:
+      - oc_memory_data:/data
+    environment:
+      - MCP_TRANSPORT=http
+      - MCP_PORT=8765
+      # Optional: use Ollama for embeddings instead of built-in ONNX
+      # - OC_MEMORY_BACKEND=ollama
+      # - OLLAMA_URL=http://host.docker.internal:11434
+    restart: unless-stopped
+
+volumes:
+  oc_memory_data:
