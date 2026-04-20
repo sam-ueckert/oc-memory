@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import logging
 import re
 import sqlite3
 from datetime import datetime, timedelta
@@ -9,6 +10,26 @@ from pathlib import Path
 from typing import Optional
 
 import numpy as np
+
+log = logging.getLogger(__name__)
+
+
+def _safe_embedding(raw) -> Optional[np.ndarray]:
+    """Parse an embedding from DB — handles both proper blobs and legacy JSON strings."""
+    if raw is None:
+        return None
+    if isinstance(raw, bytes) and len(raw) > 0:
+        return np.frombuffer(raw, dtype=np.float32)
+    if isinstance(raw, str):
+        try:
+            arr = np.array(json.loads(raw), dtype=np.float32)
+            log.warning("Embedding stored as JSON string (legacy) — should be re-embedded")
+            return arr
+        except (json.JSONDecodeError, ValueError):
+            log.error("Unparseable embedding string in DB")
+            return None
+    log.error(f"Unexpected embedding type: {type(raw)}")
+    return None
 
 
 # Type-based TTL in days (None = permanent)
@@ -297,7 +318,9 @@ class MemoryDB:
 
         scored = []
         for row in rows:
-            emb = np.frombuffer(row["embedding"], dtype=np.float32)
+            emb = _safe_embedding(row["embedding"])
+            if emb is None:
+                continue
             sim = float(np.dot(query_embedding, emb) / (np.linalg.norm(query_embedding) * np.linalg.norm(emb) + 1e-10))
             # Blend similarity with salience: 70% semantic, 30% salience
             score = 0.7 * sim + 0.3 * row["salience"]
@@ -376,7 +399,9 @@ class MemoryDB:
         combined: dict[int, dict] = {}
 
         for row in vec_rows:
-            emb = np.frombuffer(row["embedding"], dtype=np.float32)
+            emb = _safe_embedding(row["embedding"])
+            if emb is None:
+                continue
             sim = float(
                 np.dot(query_embedding, emb)
                 / (np.linalg.norm(query_embedding) * np.linalg.norm(emb) + 1e-10)
@@ -467,7 +492,9 @@ class MemoryDB:
             best_sim = 0.0
             best_id = None
             for row in rows:
-                emb = np.frombuffer(row["embedding"], dtype=np.float32)
+                emb = _safe_embedding(row["embedding"])
+                if emb is None:
+                    continue
                 sim = float(
                     np.dot(embedding, emb)
                     / (np.linalg.norm(embedding) * np.linalg.norm(emb) + 1e-10)
@@ -659,7 +686,9 @@ class MemoryDB:
 
         scored = []
         for row in rows:
-            emb = np.frombuffer(row["embedding"], dtype=np.float32)
+            emb = _safe_embedding(row["embedding"])
+            if emb is None:
+                continue
             sim = float(
                 np.dot(embedding, emb)
                 / (np.linalg.norm(embedding) * np.linalg.norm(emb) + 1e-10)

@@ -590,8 +590,13 @@ def _try_mcp_sdk_stdio():
 
 # ── HTTP/SSE transport ────────────────────────────────────────────────────────
 
-def run_http(host: str = "0.0.0.0", port: int = 8765):
-    """Run the MCP server with HTTP/SSE transport using FastMCP."""
+def run_http(host: str = "0.0.0.0", port: int = 8765, streamable: bool = True):
+    """Run the MCP server with HTTP transport using FastMCP.
+
+    When streamable=True (default), uses Streamable HTTP transport which
+    supports both the new MCP 2025-03-26 spec (POST /mcp) and legacy SSE.
+    When streamable=False, uses legacy SSE-only transport.
+    """
     import asyncio
 
     try:
@@ -602,7 +607,8 @@ def run_http(host: str = "0.0.0.0", port: int = 8765):
         _log(f"[mcp] HTTP mode requires mcp[cli] with uvicorn/starlette: {e}")
         sys.exit(1)
 
-    _log(f"[mcp] oc-memory MCP server starting (HTTP/SSE on {host}:{port})")
+    transport_label = "Streamable HTTP" if streamable else "SSE"
+    _log(f"[mcp] oc-memory MCP server starting ({transport_label} on {host}:{port})")
 
     # Eagerly init DB
     try:
@@ -664,10 +670,43 @@ def run_http(host: str = "0.0.0.0", port: int = 8765):
         registered.parameters = input_schema
 
     _log(f"[mcp] Registered {len(TOOLS)} tools")
-    _log(f"[mcp] SSE endpoint: http://{host}:{port}/sse")
     _log(f"[mcp] Health check: http://{host}:{port}/health")
 
-    asyncio.run(mcp.run_sse_async())
+    if streamable:
+        # Serve BOTH Streamable HTTP (/mcp) and legacy SSE (/sse) on the same port.
+        import uvicorn
+        from starlette.responses import JSONResponse as _JSONResponse
+
+        streamable_app = mcp.streamable_http_app()
+        sse_app = mcp.sse_app()
+
+        class PathRouter:
+            def __init__(self, streamable, sse):
+                self.streamable = streamable
+                self.sse = sse
+
+            async def __call__(self, scope, receive, send):
+                if scope["type"] == "lifespan":
+                    await self.streamable(scope, receive, send)
+                    return
+                path = scope.get("path", "")
+                if path == "/health":
+                    resp = _JSONResponse({"status": "ok", "service": "oc-memory"})
+                    await resp(scope, receive, send)
+                elif path == "/mcp":
+                    await self.streamable(scope, receive, send)
+                else:
+                    await self.sse(scope, receive, send)
+
+        combined = PathRouter(streamable_app, sse_app)
+
+        _log(f"[mcp] Streamable HTTP endpoint: http://{host}:{port}/mcp")
+        _log(f"[mcp] Legacy SSE endpoint: http://{host}:{port}/sse")
+        _log(f"[mcp] Serving both transports on port {port}")
+        uvicorn.run(combined, host=host, port=port, log_level="info")
+    else:
+        _log(f"[mcp] SSE endpoint: http://{host}:{port}/sse")
+        asyncio.run(mcp.run_sse_async())
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
