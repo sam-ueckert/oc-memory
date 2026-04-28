@@ -1,22 +1,37 @@
 # oc-memory
 
-Persistent memory MCP server for [Claude Code](https://claude.ai/code), [Cursor](https://cursor.sh), and [OpenClaw](https://github.com/openclaw/openclaw).
+oc-memory is an MCP memory server that gives AI assistants persistent, searchable long-term memory. It runs three ways: as a local Python process, in a Docker container, or on a Kubernetes cluster.
 
-Gives your AI assistant structured, searchable long-term memory backed by SQLite, full-text search, and local vector embeddings — with zero external API dependencies.
+Memory is stored in SQLite with FTS5 full-text search and local ONNX vector embeddings — no external APIs, no GPU required.
 
-## Why
+Works with [Claude Code](https://claude.ai/code), [Cursor](https://cursor.sh), [OpenClaw](https://openclaw.ai), and any MCP-compatible client.
 
-AI assistants forget everything between sessions. `oc-memory` adds a persistent layer:
+## Features
 
 - **SQLite + FTS5** — fast full-text search, zero external dependencies
 - **ONNX embeddings** — semantic search via bge-small-en-v1.5, runs locally, no GPU needed
-- **MCP protocol** — works with any MCP-compatible client (Claude Code, Cursor, OpenClaw, etc.)
+- **MCP protocol** — works with any MCP-compatible client
 - **12 memory tools** — store, search, tag, decay, export, consolidate
-- **Docker-ready** — one command to run as a persistent service
+- **`mem` CLI** — quick command-line interface for agents and humans alike
+- **Docker & k8s ready** — run as a persistent service, shared across multiple agents
 
-## Quick Start
+## Deployment Modes
 
-### Option A: Docker (recommended)
+### Option A: Local Python process
+
+Best for: single-machine setups, Claude Code, Cursor.
+
+```bash
+git clone https://github.com/sam-ueckert/oc-memory.git
+cd oc-memory
+bash setup.sh
+```
+
+`setup.sh` installs the package, downloads the ONNX model (~24MB), prints your MCP config, and optionally installs the `mem` CLI wrapper.
+
+### Option B: Docker (recommended for persistent service)
+
+Best for: running oc-memory as a background service your agent always connects to.
 
 ```bash
 git clone https://github.com/sam-ueckert/oc-memory.git
@@ -26,19 +41,19 @@ docker compose up -d
 
 The server runs at `http://localhost:8765/sse`.
 
-### Option B: Local install
+### Option C: Kubernetes (k3s/k8s)
 
-```bash
-git clone https://github.com/sam-ueckert/oc-memory.git
-cd oc-memory
-bash setup.sh
-```
+Best for: multi-agent setups, always-on homelab or VPS deployments.
 
-`setup.sh` installs the package, downloads the ONNX model (~24MB), and prints your MCP config.
+See [`docs/kubernetes.md`](docs/kubernetes.md) for full build and deploy instructions. The manifest is at [`k8s/memory-server.yaml`](k8s/memory-server.yaml).
 
-## Claude Code Integration
+---
 
-Add to `~/.claude.json` (or run `bash setup.sh` which offers to patch it automatically):
+## MCP Client Configuration
+
+### Claude Code
+
+Add to `~/.claude.json`:
 
 ```json
 {
@@ -50,7 +65,7 @@ Add to `~/.claude.json` (or run `bash setup.sh` which offers to patch it automat
 }
 ```
 
-Or point at the Docker server (HTTP/SSE):
+Or point at Docker/k8s (HTTP/SSE):
 
 ```json
 {
@@ -63,9 +78,9 @@ Or point at the Docker server (HTTP/SSE):
 }
 ```
 
-Then restart Claude Code. The memory tools will be available in every session.
+`bash setup.sh` offers to patch `~/.claude.json` automatically.
 
-## Cursor Integration
+### Cursor
 
 Create or update `.cursor/mcp.json` (or `~/.cursor/mcp.json`):
 
@@ -79,7 +94,7 @@ Create or update `.cursor/mcp.json` (or `~/.cursor/mcp.json`):
 }
 ```
 
-## OpenClaw Integration
+### OpenClaw
 
 Add under the `mcp` key in `openclaw.json`:
 
@@ -98,60 +113,93 @@ Add under the `mcp` key in `openclaw.json`:
 }
 ```
 
-Run `oc-memory setup` at any time to regenerate these snippets for your current install path.
+See [`docs/openclaw-integration.md`](docs/openclaw-integration.md) for the full OpenClaw setup guide.
 
-## CLI Usage
+---
+
+## `mem` CLI
+
+`mem` is a shell wrapper for interacting with the memory server from the command line or from agent shell commands.
+
+### Installation
 
 ```bash
+# After cloning the repo:
+cp cli/mem ~/bin/mem
+chmod +x ~/bin/mem
+
+# Make sure ~/bin is in your PATH:
+echo 'export PATH="$HOME/bin:$PATH"' >> ~/.bashrc
+source ~/.bashrc
+```
+
+`setup.sh` offers to do this automatically.
+
+### Usage
+
+```bash
+# Search memories (vector + FTS)
+mem search "database choice"
+
 # Store a memory
-oc-memory store --scene myproject --type decision --salience 0.8 "Chose PostgreSQL over MySQL for better JSON support"
+mem store myproject decision 0.8 "Chose PostgreSQL over MySQL for better JSON support"
+mem quick-store myproject fact 0.7 "API runs on port 8080"   # alias
+
+# Tag a cell
+mem tag 42 database architecture
+
+# Search by tag
+mem search-tag architecture
+
+# Delete a cell
+mem forget 42
+
+# Stats and listing
+mem stats
+mem scenes
+mem scene myproject
+
+# Maintenance
+mem decay       # fade old low-access memories
+mem export      # export to markdown + JSON
+```
+
+### Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MEM_MCP_URL` | `http://localhost:8765` | MCP server URL |
+| `MEM_LOCAL=1` | — | Use local Python library directly (no server) |
+
+For Docker: default URL works out of the box.
+For k8s: set `MEM_MCP_URL=http://<node-ip>:<nodeport>`.
+
+---
+
+## `oc-memory` CLI
+
+The `oc-memory` CLI works directly against the local database (no server required):
+
+```bash
+# Store
+oc-memory store --scene myproject --type decision --salience 0.8 "Chose PostgreSQL"
 
 # Search
 oc-memory search "database choice"
 
-# Stats
+# Stats / scenes
 oc-memory stats
-
-# List scenes
 oc-memory scenes
 
-# Tag a cell
+# Tag / decay / export
 oc-memory tag <id> database architecture
-
-# Decay old low-access memories
 oc-memory decay
-
-# Export to markdown + JSON
 oc-memory export
 ```
 
-### Quick store (no flags, scene required)
+---
 
-```bash
-oc-memory quick-store myproject fact 0.7 "API runs on port 8080"
-```
-
-## Environment Variables
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `OC_MEMORY_DB` | `~/.oc-memory/memory.db` | SQLite database path |
-| `OC_MEMORY_EXPORT` | `~/.oc-memory/export` | Export directory |
-| `OC_MEMORY_BACKEND` | `onnx` | Embedding backend: `onnx` or `ollama` |
-| `OLLAMA_URL` | `http://localhost:11434` | Ollama endpoint (if using ollama backend) |
-
-## Architecture
-
-```
-Your AI assistant
-    │
-    ▼ (MCP tools)
-oc-memory MCP server
-    │
-    ├── SQLite + FTS5 ── fast full-text search
-    ├── ONNX embeddings ── semantic similarity (bge-small-en-v1.5, local)
-    └── memory.db ──── ~/.oc-memory/memory.db (or Docker volume)
-```
+## Memory Model
 
 Memory is stored as typed **cells** with salience scores:
 
@@ -164,6 +212,10 @@ Memory is stored as typed **cells** with salience scores:
 | `risk` | Warnings, known issues |
 | `plan` | Future intentions |
 | `lesson` | Learned from mistakes |
+
+**Salience:** 0.1 (trivia) → 0.5 (normal) → 0.8 (important) → 1.0 (critical)
+
+---
 
 ## MCP Tool Reference
 
@@ -182,9 +234,33 @@ Memory is stored as typed **cells** with salience scores:
 | `memory_digest` | Get daily digest of recent memories |
 | `memory_consolidate` | Consolidate scene summaries with LLM |
 
-## Self-Hosting (Kubernetes)
+---
 
-See [`k8s/memory-server.yaml`](k8s/memory-server.yaml) for a minimal k3s/k8s deployment. Update the image reference and storage class for your cluster.
+## Architecture
+
+```
+Your AI assistant
+    │
+    ▼ (MCP tools)
+oc-memory MCP server
+    │
+    ├── SQLite + FTS5 ── fast full-text search
+    ├── ONNX embeddings ── semantic similarity (bge-small-en-v1.5, local)
+    └── memory.db ──── ~/.oc-memory/memory.db (or Docker volume / k8s PVC)
+```
+
+---
+
+## Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `OC_MEMORY_DB` | `~/.oc-memory/memory.db` | SQLite database path |
+| `OC_MEMORY_EXPORT` | `~/.oc-memory/export` | Export directory |
+| `OC_MEMORY_BACKEND` | `onnx` | Embedding backend: `onnx` or `ollama` |
+| `OLLAMA_URL` | `http://localhost:11434` | Ollama endpoint (if using ollama backend) |
+
+---
 
 ## OpenClaw Hooks
 

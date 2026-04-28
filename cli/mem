@@ -1,0 +1,306 @@
+#!/bin/bash
+# mem — Quick memory interface for oc-memory MCP server
+#
+# Usage:
+#   mem search <query>                         — search memories (vector+FTS)
+#   mem search-tag <tag>                       — find by tag
+#   mem store <scene> <type> <sal> <content>   — store a memory cell
+#   mem quick-store <scene> <type> <sal> <content>  — alias for store
+#   mem tag <id> <tag> [tag...]                — tag a cell
+#   mem forget <id>                            — delete a cell
+#   mem stats                                  — DB statistics
+#   mem scenes                                 — list all scenes
+#   mem scene <name>                           — show scene cells
+#   mem decay                                  — decay old low-salience cells
+#   mem export                                 — export to markdown + JSON
+#
+# Configuration:
+#   MEM_MCP_URL   MCP server URL (default: http://localhost:8765)
+#   MEM_LOCAL=1   Use local Python library directly (no server required)
+#
+# Installation:
+#   cp cli/mem ~/bin/mem && chmod +x ~/bin/mem
+#   export PATH="$HOME/bin:$PATH"   # add to ~/.bashrc
+
+set -euo pipefail
+
+MCP_URL="${MEM_MCP_URL:-http://localhost:8765}"
+USE_LOCAL="${MEM_LOCAL:-0}"
+
+# ── Local mode (direct Python library, no server) ─────────────────────────────
+
+if [[ "$USE_LOCAL" == "1" ]] || [[ "${1:-}" == "--local" ]]; then
+    [[ "${1:-}" == "--local" ]] && shift
+    exec python3 -m oc_memory.cli "$@"
+fi
+
+# ── MCP mode (HTTP/SSE to running server) ─────────────────────────────────────
+
+# Python MCP client helper (inline)
+mcp_call() {
+    local tool="$1"
+    local args="$2"
+    python3 - "$tool" "$args" "$MCP_URL" << 'PYEOF'
+import sys, json, requests, threading, queue, time
+
+tool_name = sys.argv[1]
+args_json  = sys.argv[2]
+mcp_base   = sys.argv[3]
+
+try:
+    args = json.loads(args_json) if args_json else {}
+except json.JSONDecodeError:
+    args = {}
+
+results = queue.Queue()
+
+def listen():
+    try:
+        with requests.get(f"{mcp_base}/sse", stream=True, timeout=30) as sse:
+            endpoint = None
+            for line in sse.iter_lines(chunk_size=1):
+                if not line:
+                    continue
+                line = line.decode()
+                if line.startswith("data:"):
+                    data = line[5:].strip()
+                    if not endpoint:
+                        endpoint = data
+                        results.put(("endpoint", endpoint))
+                    elif data:
+                        results.put(("message", data))
+    except Exception as e:
+        results.put(("error", str(e)))
+
+t = threading.Thread(target=listen, daemon=True)
+t.start()
+
+try:
+    kind, val = results.get(timeout=5)
+    if kind == "error":
+        print(f"SSE error: {val}", file=sys.stderr)
+        sys.exit(1)
+    endpoint = val
+    msg_url = f"{mcp_base}{endpoint}"
+
+    # Initialize
+    requests.post(msg_url, json={
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {
+            "protocolVersion": "2024-11-05",
+            "capabilities": {},
+            "clientInfo": {"name": "mem-cli", "version": "1.0"}
+        }
+    }, timeout=5)
+    time.sleep(0.1)
+
+    # Tool call
+    requests.post(msg_url, json={
+        "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+        "params": {"name": tool_name, "arguments": args}
+    }, timeout=10)
+
+    # Wait for response on SSE stream
+    while True:
+        kind, data = results.get(timeout=10)
+        if kind != "message":
+            continue
+        try:
+            parsed = json.loads(data)
+        except Exception:
+            continue
+        if parsed.get("id") == 2:
+            content = parsed.get("result", {}).get("content", [])
+            if content:
+                print(content[0]["text"])
+            elif parsed.get("result", {}).get("isError"):
+                print(f"Error: {parsed['result']}", file=sys.stderr)
+                sys.exit(1)
+            break
+
+except queue.Empty:
+    print("Timeout waiting for MCP response", file=sys.stderr)
+    print(f"Is the server running at {mcp_base} ?", file=sys.stderr)
+    sys.exit(1)
+except Exception as e:
+    print(f"MCP error: {e}", file=sys.stderr)
+    sys.exit(1)
+PYEOF
+}
+
+json_str() {
+    python3 -c 'import json,sys; print(json.dumps(sys.stdin.read().strip()))'
+}
+
+case "${1:-}" in
+    search)
+        shift
+        QUERY="$*"
+        mcp_call "memory_search" \
+            "{\"query\": $(echo "$QUERY" | json_str)}" \
+        | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+results = data.get('results', [])
+if not results:
+    print('No results.')
+else:
+    for r in results:
+        tags = ' [' + ', '.join(r.get('tags', [])) + ']' if r.get('tags') else ''
+        print(f'[{r[\"id\"]}] [{r[\"cell_type\"]}] scene:{r[\"scene\"]} sal:{r[\"salience\"]:.2f}{tags} — {r[\"content\"][:150]}')
+print(f'({data.get(\"count\",0)} results via {data.get(\"method\",\"?\")})')
+"
+        ;;
+
+    search-tag)
+        shift
+        TAG="$1"
+        mcp_call "memory_search_tag" "{\"tag\": \"$TAG\"}" \
+        | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+results = data.get('results', [])
+if not results:
+    print('No results.')
+else:
+    for r in results:
+        print(f'[{r[\"id\"]}] [{r[\"cell_type\"]}] scene:{r[\"scene\"]} sal:{r[\"salience\"]:.2f} — {r[\"content\"][:150]}')
+print(f'({len(results)} results)')
+"
+        ;;
+
+    store|quick-store)
+        shift
+        SCENE="$1"; TYPE="$2"; SAL="$3"; shift 3; CONTENT="$*"
+        CONTENT_JSON=$(echo "$CONTENT" | json_str)
+        mcp_call "memory_store" \
+            "{\"content\": $CONTENT_JSON, \"cell_type\": \"$TYPE\", \"scene\": \"$SCENE\", \"salience\": $SAL}" \
+        | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+print(f'Stored cell {data[\"id\"]}: [{data[\"cell_type\"]}] scene:{data[\"scene\"]}')
+"
+        ;;
+
+    tag)
+        shift
+        ID="$1"; shift
+        TAGS=$(python3 -c "import json,sys; print(json.dumps(sys.argv[1:]))" "$@")
+        mcp_call "memory_tag" "{\"id\": $ID, \"tags\": $TAGS}" \
+        | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+print(f'Tagged cell {data[\"id\"]}: {data.get(\"tags_added\", [])}')
+"
+        ;;
+
+    forget)
+        shift
+        ID="$1"
+        mcp_call "memory_forget" "{\"id\": $ID}" \
+        | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+print(f'Deleted cell {data[\"id\"]}')
+"
+        ;;
+
+    stats)
+        mcp_call "memory_stats" "{}" | python3 -m json.tool
+        ;;
+
+    scenes)
+        mcp_call "memory_scenes" "{}" | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+scenes = data.get('scenes', [])
+if not scenes:
+    print('No scenes.')
+else:
+    for s in scenes:
+        print(f'  {s[\"scene\"]:<30} {s[\"count\"]:>4} cells  last: {s.get(\"last_updated\",\"?\")[:10]}')
+print(f'({len(scenes)} scenes)')
+"
+        ;;
+
+    scene)
+        shift
+        SCENE="$1"
+        mcp_call "memory_scene" "{\"scene\": \"$SCENE\"}" \
+        | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+if not data.get('found'):
+    print('Scene not found.')
+else:
+    print(f'Scene: {data[\"scene\"]} ({data[\"cell_count\"]} cells)')
+    for c in data.get('cells', []):
+        tags = ' [' + ', '.join(c.get('tags', [])) + ']' if c.get('tags') else ''
+        print(f'  [{c[\"id\"]}] [{c[\"cell_type\"]}] sal:{c[\"salience\"]:.2f}{tags} — {c[\"content\"][:120]}')
+"
+        ;;
+
+    decay)
+        mcp_call "memory_decay" "{}" \
+        | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+print(f'Decayed {data.get(\"decayed\", 0)} cells')
+"
+        ;;
+
+    export)
+        mcp_call "memory_export" "{}" | python3 -m json.tool
+        ;;
+
+    ""|help|--help|-h)
+        cat <<EOF
+mem — oc-memory command-line interface
+
+Usage: mem [--local] <command> [args]
+
+Commands:
+  search <query>                     Search memories (vector+FTS)
+  search-tag <tag>                   Find cells by tag
+  store <scene> <type> <sal> <text>  Store a memory cell
+  quick-store <scene> <type> <sal> <text>  Alias for store
+  tag <id> <tag> [tag...]            Add tags to a cell
+  forget <id>                        Delete a cell by ID
+  stats                              Database statistics
+  scenes                             List all scenes
+  scene <name>                       Show cells in a scene
+  decay                              Fade old low-salience cells
+  export                             Export to markdown + JSON
+
+Flags:
+  --local   Use local Python library directly (bypasses MCP server)
+            Equivalent to MEM_LOCAL=1
+
+Cell types: fact, decision, preference, task, risk, plan, lesson
+Salience:   0.1 (trivia) → 0.5 (normal) → 0.8 (important) → 1.0 (critical)
+
+Configuration:
+  MEM_MCP_URL   MCP server URL  (default: http://localhost:8765)
+  MEM_LOCAL=1   Use local library instead of MCP server
+
+Current MCP endpoint: $MCP_URL
+
+Examples:
+  mem search "database choice"
+  mem store myproject decision 0.8 "Chose PostgreSQL over MySQL"
+  mem quick-store myproject fact 0.7 "API runs on port 8080"
+  mem tag 42 database architecture
+  mem search-tag architecture
+  mem forget 42
+  mem stats
+  mem scenes
+  mem scene myproject
+EOF
+        ;;
+
+    *)
+        echo "Unknown command: $1" >&2
+        echo "Run 'mem help' for usage." >&2
+        exit 1
+        ;;
+esac

@@ -113,6 +113,33 @@ EOF
   fi
 fi
 
+# ── Offer to install mem CLI ─────────────────────────────────────────────────
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+MEM_CLI="$SCRIPT_DIR/cli/mem"
+
+if [ -f "$MEM_CLI" ]; then
+  echo ""
+  echo -e "${YELLOW}mem CLI wrapper available (cli/mem)${NC}"
+  echo -n "Install mem CLI to ~/bin/mem? [y/N] "
+  read -r REPLY
+  if [[ "$REPLY" =~ ^[Yy]$ ]]; then
+    mkdir -p "$HOME/bin"
+    cp "$MEM_CLI" "$HOME/bin/mem"
+    chmod +x "$HOME/bin/mem"
+    echo -e "${GREEN}✓ Installed to ~/bin/mem${NC}"
+    if ! echo "$PATH" | grep -q "$HOME/bin"; then
+      echo -e "${YELLOW}Note: Add ~/bin to your PATH:${NC}"
+      echo "  echo 'export PATH=\"\$HOME/bin:\$PATH\"' >> ~/.bashrc"
+      echo "  source ~/.bashrc"
+    fi
+    echo ""
+    echo "Quick test:"
+    echo "  mem stats"
+    echo "  mem search 'first memory'"
+  fi
+fi
+
 echo ""
 echo -e "${GREEN}Setup complete!${NC}"
 echo ""

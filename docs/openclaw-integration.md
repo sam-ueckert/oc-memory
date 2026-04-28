@@ -34,18 +34,12 @@ Verify:
 oc-memory stats
 ```
 
-## Create a CLI Wrapper
+## Install the `mem` CLI
 
-Create a shell wrapper at `~/bin/mem` that your agent can call quickly:
-
-```bash
-#!/bin/bash
-# ~/bin/mem — Quick memory interface (thin wrapper around oc-memory CLI)
-export OC_MEMORY_DB="${OC_MEMORY_DB:-$HOME/.oc-memory/memory.db}"
-exec oc-memory "$@"
-```
+The repo includes a full-featured `mem` CLI wrapper at `cli/mem`. Install it:
 
 ```bash
+cp cli/mem ~/bin/mem
 chmod +x ~/bin/mem
 ```
 
@@ -53,6 +47,15 @@ Make sure `~/bin` is in your PATH (add to `~/.bashrc` if needed):
 ```bash
 export PATH="$HOME/bin:$PATH"
 ```
+
+`bash setup.sh` offers to do this automatically.
+
+If you're connecting to a remote server (Docker or k8s), set:
+```bash
+export MEM_MCP_URL="http://<host>:<port>"
+```
+
+For local library use (no server): `MEM_LOCAL=1 mem stats`
 
 ## Update AGENTS.md
 
