@@ -34,7 +34,7 @@ import sys
 from datetime import date as date_type
 from pathlib import Path
 
-DB_PATH = os.environ.get("OC_MEMORY_DB", os.path.expanduser("~/.oc-memory/memory.db")))
+DB_PATH = os.environ.get("OC_MEMORY_DB", os.path.expanduser("~/.oc-memory/memory.db"))
 EXPORT_DIR = os.environ.get(
     "OC_MEMORY_EXPORT", os.path.expanduser("~/.oc-memory/export")
 )

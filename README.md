@@ -1,8 +1,12 @@
 # oc-memory
 
-oc-memory is an MCP memory server that gives AI assistants persistent, searchable long-term memory. It runs three ways: as a local Python process, in a Docker container, or on a Kubernetes cluster.
+oc-memory is an MCP memory server that gives AI coding agents persistent, searchable long-term memory. It runs as:
 
-Memory is stored in SQLite with FTS5 full-text search and local ONNX vector embeddings — no external APIs, no GPU required.
+- A **local Python process** (no container needed)
+- A **Docker container**
+- A **Kubernetes pod**
+
+Built on SQLite + FTS5 + ONNX embeddings. Zero external API dependencies.
 
 Works with [Claude Code](https://claude.ai/code), [Cursor](https://cursor.sh), [OpenClaw](https://openclaw.ai), and any MCP-compatible client.
 
@@ -15,23 +19,27 @@ Works with [Claude Code](https://claude.ai/code), [Cursor](https://cursor.sh), [
 - **`mem` CLI** — quick command-line interface for agents and humans alike
 - **Docker & k8s ready** — run as a persistent service, shared across multiple agents
 
-## Deployment Modes
+---
 
-### Option A: Local Python process
+## Quick Start
 
-Best for: single-machine setups, Claude Code, Cursor.
+### Option A: Local (no container)
 
 ```bash
 git clone https://github.com/sam-ueckert/oc-memory.git
 cd oc-memory
+pip install -e .
+python -c "from oc_memory.embedding_backends import download_onnx_model; download_onnx_model()"
+oc-memory stats   # verify installation
+```
+
+Or use the setup script, which does all of the above plus optional extras:
+
+```bash
 bash setup.sh
 ```
 
-`setup.sh` installs the package, downloads the ONNX model (~24MB), prints your MCP config, and optionally installs the `mem` CLI wrapper.
-
-### Option B: Docker (recommended for persistent service)
-
-Best for: running oc-memory as a background service your agent always connects to.
+### Option B: Docker
 
 ```bash
 git clone https://github.com/sam-ueckert/oc-memory.git
@@ -43,9 +51,88 @@ The server runs at `http://localhost:8765/sse`.
 
 ### Option C: Kubernetes (k3s/k8s)
 
-Best for: multi-agent setups, always-on homelab or VPS deployments.
-
 See [`docs/kubernetes.md`](docs/kubernetes.md) for full build and deploy instructions. The manifest is at [`k8s/memory-server.yaml`](k8s/memory-server.yaml).
+
+---
+
+## `mem` CLI
+
+The repo includes `bin/mem` — a convenience shell wrapper around the `oc-memory` CLI.
+
+### Installation
+
+```bash
+# Option 1: symlink into your PATH
+ln -s /path/to/oc-memory/bin/mem ~/bin/mem
+
+# Option 2: add repo bin/ to PATH
+echo 'export PATH="/path/to/oc-memory/bin:$PATH"' >> ~/.bashrc
+source ~/.bashrc
+```
+
+`setup.sh` offers to install this automatically.
+
+### Usage
+
+```bash
+# Search memories (vector + FTS)
+mem search "database choice"
+
+# Store a memory
+mem store myproject decision 0.8 "Chose PostgreSQL over MySQL for better JSON support"
+mem quick-store myproject fact 0.7 "API runs on port 8080"   # alias
+
+# Tag a cell
+mem tag 42 database architecture
+
+# Search by tag
+mem search-tag architecture
+
+# Delete a cell
+mem forget 42
+
+# Stats and listing
+mem stats
+mem scenes
+mem scene myproject
+
+# Maintenance
+mem decay       # fade old low-access memories
+mem export      # export to markdown + JSON
+```
+
+There's also an MCP-aware version at `cli/mem` that can talk to a running MCP server (Docker/k8s) or use the local library directly. See `cli/mem --help` for details.
+
+---
+
+## Running the MCP Server
+
+Three ways to start the MCP server locally (no container):
+
+### 1. Stdio mode (entrypoint)
+
+```bash
+oc-memory-mcp
+```
+
+This is the entrypoint registered in `pyproject.toml`. Use this in MCP client configs (Claude Code, Cursor, OpenClaw stdio transport).
+
+### 2. Stdio mode (module)
+
+```bash
+python -m oc_memory.mcp_server
+```
+
+Same as above — useful when you want to run from a specific Python environment.
+
+### 3. HTTP/SSE mode
+
+```bash
+python -m oc_memory.mcp_server --http
+# or: MCP_TRANSPORT=http python -m oc_memory.mcp_server
+```
+
+Starts an HTTP server on `0.0.0.0:8765` with SSE transport. Use `--port` and `--host` to customize. This is what Docker and Kubernetes deployments use.
 
 ---
 
@@ -78,7 +165,7 @@ Or point at Docker/k8s (HTTP/SSE):
 }
 ```
 
-`bash setup.sh` offers to patch `~/.claude.json` automatically.
+`setup.sh` offers to patch `~/.claude.json` automatically.
 
 ### Cursor
 
@@ -117,72 +204,13 @@ See [`docs/openclaw-integration.md`](docs/openclaw-integration.md) for the full 
 
 ---
 
-## `mem` CLI
-
-`mem` is a shell wrapper for interacting with the memory server from the command line or from agent shell commands.
-
-### Installation
-
-```bash
-# After cloning the repo:
-cp cli/mem ~/bin/mem
-chmod +x ~/bin/mem
-
-# Make sure ~/bin is in your PATH:
-echo 'export PATH="$HOME/bin:$PATH"' >> ~/.bashrc
-source ~/.bashrc
-```
-
-`setup.sh` offers to do this automatically.
-
-### Usage
-
-```bash
-# Search memories (vector + FTS)
-mem search "database choice"
-
-# Store a memory
-mem store myproject decision 0.8 "Chose PostgreSQL over MySQL for better JSON support"
-mem quick-store myproject fact 0.7 "API runs on port 8080"   # alias
-
-# Tag a cell
-mem tag 42 database architecture
-
-# Search by tag
-mem search-tag architecture
-
-# Delete a cell
-mem forget 42
-
-# Stats and listing
-mem stats
-mem scenes
-mem scene myproject
-
-# Maintenance
-mem decay       # fade old low-access memories
-mem export      # export to markdown + JSON
-```
-
-### Configuration
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `MEM_MCP_URL` | `http://localhost:8765` | MCP server URL |
-| `MEM_LOCAL=1` | — | Use local Python library directly (no server) |
-
-For Docker: default URL works out of the box.
-For k8s: set `MEM_MCP_URL=http://<node-ip>:<nodeport>`.
-
----
-
 ## `oc-memory` CLI
 
 The `oc-memory` CLI works directly against the local database (no server required):
 
 ```bash
 # Store
-oc-memory store --scene myproject --type decision --salience 0.8 "Chose PostgreSQL"
+oc-memory quick-store myproject decision 0.8 "Chose PostgreSQL"
 
 # Search
 oc-memory search "database choice"
@@ -259,6 +287,8 @@ oc-memory MCP server
 | `OC_MEMORY_EXPORT` | `~/.oc-memory/export` | Export directory |
 | `OC_MEMORY_BACKEND` | `onnx` | Embedding backend: `onnx` or `ollama` |
 | `OLLAMA_URL` | `http://localhost:11434` | Ollama endpoint (if using ollama backend) |
+| `MCP_PORT` | `8765` | Port for HTTP/SSE mode |
+| `MCP_TRANSPORT` | — | Set to `http` to force HTTP/SSE mode |
 
 ---
 

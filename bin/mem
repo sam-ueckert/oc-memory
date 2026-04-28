@@ -1,0 +1,105 @@
+#!/bin/bash
+# Convenience wrapper — symlink to ~/bin/mem or add repo bin/ to PATH
+#
+# mem — shorthand CLI for oc-memory (wraps the oc-memory CLI directly)
+#
+# Usage:
+#   mem search <query>
+#   mem store <scene> <type> <salience> <content>
+#   mem quick-store <scene> <type> <salience> <content>
+#   mem stats
+#   mem scenes
+#   mem scene <name>
+#   mem tag <id> <tag> [tag...]
+#   mem search-tag <tag>
+#   mem forget <id>
+#   mem decay
+#   mem export
+#   mem help
+#
+# Requires: oc-memory installed (pip install -e /path/to/oc-memory)
+#
+# Installation:
+#   ln -s /path/to/oc-memory/bin/mem ~/bin/mem
+#   # or: export PATH="/path/to/oc-memory/bin:$PATH"  (add to ~/.bashrc)
+
+set -euo pipefail
+
+CMD="${1:-help}"
+shift || true
+
+case "$CMD" in
+    search)
+        exec oc-memory search "$@"
+        ;;
+    store|quick-store)
+        exec oc-memory quick-store "$@"
+        ;;
+    stats)
+        exec oc-memory stats "$@"
+        ;;
+    scenes)
+        exec oc-memory scenes "$@"
+        ;;
+    scene)
+        exec oc-memory scene "$@"
+        ;;
+    tag)
+        exec oc-memory tag "$@"
+        ;;
+    search-tag)
+        exec oc-memory search-tag "$@"
+        ;;
+    forget)
+        exec oc-memory forget "$@"
+        ;;
+    decay)
+        exec oc-memory decay "$@"
+        ;;
+    export)
+        exec oc-memory export "$@"
+        ;;
+    help|--help|-h|"")
+        cat <<'EOF'
+mem — oc-memory command-line interface
+
+Usage: mem <command> [args]
+
+Commands:
+  search <query>                          Search memories (vector + FTS)
+  store <scene> <type> <sal> <content>    Store a memory cell
+  quick-store <scene> <type> <sal> <content>  Alias for store
+  stats                                   Database statistics
+  scenes                                  List all scenes
+  scene <name>                            Show cells in a scene
+  tag <id> <tag> [tag...]                 Add tags to a cell
+  search-tag <tag>                        Find cells by tag
+  forget <id>                             Delete a cell by ID
+  decay                                   Fade old low-salience cells
+  export                                  Export to markdown + JSON
+  help                                    Show this help
+
+Cell types: fact, decision, preference, task, risk, plan, lesson
+Salience:   0.1 (trivia) → 0.5 (normal) → 0.8 (important) → 1.0 (critical)
+
+Environment:
+  OC_MEMORY_DB    Path to SQLite database (default: ~/.oc-memory/memory.db)
+
+Examples:
+  mem search "database choice"
+  mem store myproject decision 0.8 "Chose PostgreSQL over MySQL"
+  mem quick-store myproject fact 0.7 "API runs on port 8080"
+  mem tag 42 database architecture
+  mem search-tag architecture
+  mem forget 42
+  mem stats
+  mem scenes
+  mem scene myproject
+EOF
+        ;;
+    *)
+        echo "Unknown command: $CMD" >&2
+        echo "Run 'mem help' for usage." >&2
+        exit 1
+        ;;
+esac

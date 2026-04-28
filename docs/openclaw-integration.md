@@ -36,11 +36,19 @@ oc-memory stats
 
 ## Install the `mem` CLI
 
-The repo includes a full-featured `mem` CLI wrapper at `cli/mem`. Install it:
+The repo includes two CLI wrappers:
+
+- **`bin/mem`** — lightweight, wraps the `oc-memory` CLI directly (recommended for local installs)
+- **`cli/mem`** — full-featured, can talk to a running MCP server (Docker/k8s) or use the local library
+
+For most users, `bin/mem` is all you need:
 
 ```bash
-cp cli/mem ~/bin/mem
-chmod +x ~/bin/mem
+# Option 1: symlink into ~/bin
+ln -s /path/to/oc-memory/bin/mem ~/bin/mem
+
+# Option 2: add repo bin/ to PATH
+export PATH="/path/to/oc-memory/bin:$PATH"  # add to ~/.bashrc
 ```
 
 Make sure `~/bin` is in your PATH (add to `~/.bashrc` if needed):
@@ -48,14 +56,14 @@ Make sure `~/bin` is in your PATH (add to `~/.bashrc` if needed):
 export PATH="$HOME/bin:$PATH"
 ```
 
-`bash setup.sh` offers to do this automatically.
+`bash setup.sh` offers to install this automatically.
 
-If you're connecting to a remote server (Docker or k8s), set:
+If you're connecting to a remote server (Docker or k8s), use `cli/mem` instead and set:
 ```bash
 export MEM_MCP_URL="http://<host>:<port>"
 ```
 
-For local library use (no server): `MEM_LOCAL=1 mem stats`
+For local library use (no server): `MEM_LOCAL=1 cli/mem stats`
 
 ## Update AGENTS.md
 
