@@ -15,7 +15,16 @@
 
 set -euo pipefail
 
-MEMORY_FILE="${1:-${WORKSPACE:-.}/MEMORY.md}"
+# Auto-detect target file: explicit arg > MEMORY.md > CLAUDE.md
+if [[ -n "${1:-}" ]]; then
+  MEMORY_FILE="$1"
+elif [[ -f "${WORKSPACE:-.}/MEMORY.md" ]]; then
+  MEMORY_FILE="${WORKSPACE:-.}/MEMORY.md"
+elif [[ -f "${WORKSPACE:-.}/CLAUDE.md" ]]; then
+  MEMORY_FILE="${WORKSPACE:-.}/CLAUDE.md"
+else
+  MEMORY_FILE="${WORKSPACE:-.}/MEMORY.md"
+fi
 MEM_CMD="${2:-mem}"
 MARKER_START="<!-- ARCHY_DIGEST_START -->"
 MARKER_END="<!-- ARCHY_DIGEST_END -->"

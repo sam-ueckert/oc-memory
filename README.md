@@ -292,6 +292,44 @@ oc-memory MCP server
 
 ---
 
+## Skills
+
+### Context Digest
+
+Pre-loads high-salience memories into your agent's context file (`MEMORY.md` or `CLAUDE.md`) so every session starts with key memories — no manual search needed.
+
+```bash
+# Install
+cp skills/context-digest/scripts/gen-context-digest.sh ~/bin/
+chmod +x ~/bin/gen-context-digest.sh
+
+# Run (auto-detects MEMORY.md or CLAUDE.md)
+WORKSPACE=/path/to/project bash ~/bin/gen-context-digest.sh
+
+# Cron (every 3h)
+0 */3 * * * WORKSPACE=/path/to/project bash ~/bin/gen-context-digest.sh
+```
+
+See [`skills/context-digest/SKILL.md`](skills/context-digest/SKILL.md) for full docs.
+
+### Promote Lessons (Learning Loop)
+
+Converts corrections and lessons stored in memory into behavioral rules, injected into `SOUL.md` (OpenClaw) or `CLAUDE.md` (Claude Code). This creates a feedback loop where past mistakes become standing rules for future sessions.
+
+```bash
+# OpenClaw
+API_TOKEN=<gateway-token> WORKSPACE=/path/to/workspace bash promote-lessons.sh
+
+# Claude Code (Anthropic API)
+API_TOKEN=$ANTHROPIC_API_KEY API_URL=https://api.anthropic.com/v1/messages WORKSPACE=/path/to/project bash promote-lessons.sh
+```
+
+See [`skills/promote-lessons/SKILL.md`](skills/promote-lessons/SKILL.md) for full docs.
+
+### Recall (MCP-based)
+
+Teaches agents how to use oc-memory's MCP tools for search, store, and maintenance. See [`skills/recall/SKILL.md`](skills/recall/SKILL.md).
+
 ## OpenClaw Hooks
 
 For automatic recall and capture on every conversation turn, see [`hooks/README.md`](hooks/README.md).

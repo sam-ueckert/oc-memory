@@ -140,6 +140,61 @@ if [ -f "$MEM_CLI" ]; then
   fi
 fi
 
+# ── Offer to install context-digest skill ────────────────────────────────────
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+DIGEST_SCRIPT="$SCRIPT_DIR/skills/context-digest/scripts/gen-context-digest.sh"
+
+if [ -f "$DIGEST_SCRIPT" ]; then
+  echo ""
+  echo -e "${YELLOW}Optional: Context Digest (pre-loads memories into agent context)${NC}"
+  echo "Generates a Memory Digest section in MEMORY.md or CLAUDE.md so every"
+  echo "agent session starts with high-salience memories in context."
+  echo -n "Install context-digest to ~/bin? [y/N] "
+  read -r REPLY
+  if [[ "$REPLY" =~ ^[Yy]$ ]]; then
+    mkdir -p "$HOME/bin"
+    cp "$DIGEST_SCRIPT" "$HOME/bin/gen-context-digest.sh"
+    chmod +x "$HOME/bin/gen-context-digest.sh"
+    echo -e "${GREEN}✓ Installed to ~/bin/gen-context-digest.sh${NC}"
+    echo ""
+    echo "  Test:  WORKSPACE=/path/to/workspace bash ~/bin/gen-context-digest.sh"
+    echo "  Cron:  0 */3 * * * WORKSPACE=/path/to/workspace bash ~/bin/gen-context-digest.sh"
+    echo ""
+    echo "  Add markers to your MEMORY.md or CLAUDE.md:"
+    echo "    <!-- ARCHY_DIGEST_START -->"
+    echo "    <!-- ARCHY_DIGEST_END -->"
+  fi
+fi
+
+# ── Offer to install promote-lessons skill ────────────────────────────────────
+
+PROMOTE_SCRIPT="$SCRIPT_DIR/skills/promote-lessons/scripts/promote-lessons.sh"
+
+if [ -f "$PROMOTE_SCRIPT" ]; then
+  echo ""
+  echo -e "${YELLOW}Optional: Promote Lessons (learning loop — corrections become rules)${NC}"
+  echo "Synthesizes behavioral rules from tagged corrections and lessons via LLM,"
+  echo "then injects them into SOUL.md or CLAUDE.md. Works with OpenClaw and Anthropic API."
+  echo -n "Install promote-lessons to ~/bin? [y/N] "
+  read -r REPLY
+  if [[ "$REPLY" =~ ^[Yy]$ ]]; then
+    mkdir -p "$HOME/bin"
+    cp "$PROMOTE_SCRIPT" "$HOME/bin/promote-lessons.sh"
+    chmod +x "$HOME/bin/promote-lessons.sh"
+    echo -e "${GREEN}✓ Installed to ~/bin/promote-lessons.sh${NC}"
+    echo ""
+    echo "  OpenClaw:  API_TOKEN=<gateway-token> WORKSPACE=/path bash ~/bin/promote-lessons.sh"
+    echo "  Claude:    API_TOKEN=\$ANTHROPIC_API_KEY API_URL=https://api.anthropic.com/v1/messages WORKSPACE=/path bash ~/bin/promote-lessons.sh"
+    echo ""
+    echo "  Add markers to your SOUL.md or CLAUDE.md:"
+    echo "    <!-- LEARNED_RULES_START -->"
+    echo "    ## Learned Rules"
+    echo "    *No rules yet.*"
+    echo "    <!-- LEARNED_RULES_END -->"
+  fi
+fi
+
 echo ""
 echo -e "${GREEN}Setup complete!${NC}"
 echo ""
