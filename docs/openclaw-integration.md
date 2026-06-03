@@ -165,6 +165,26 @@ OC_MEMORY_BACKUP_HOST=my-backup-server oc-memory backup
 
 Add the export directory to your workspace `.gitignore` exceptions or track it directly.
 
+## Multi-User / Multi-Agent Setups
+
+When multiple OpenClaw agents share the same oc-memory server, enable per-agent isolation:
+
+```bash
+# Set admin bypass on the host running oc-memory
+export OC_MEMORY_ADMIN_USER="your-primary-agent-id"
+```
+
+Each agent should pass its own `caller_id` when calling MCP tools:
+
+```json
+{"name": "memory_search", "arguments": {"query": "...", "caller_id": "agent-bob"}}
+```
+
+Shared project context should be stored with `visibility: "shared"` so all agents can read it.
+Sensitive/personal context should use `visibility: "private"` (default).
+
+See [docs/multi-user.md](multi-user.md) for full details.
+
 ## How the Agent Uses It
 
 During a session, the agent's workflow becomes:

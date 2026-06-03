@@ -72,6 +72,68 @@ scp my-server:~/backups/memory.db ~/.openclaw/memory.db
 
 This preserves everything including embeddings.
 
+## Layer 4: Google Drive Backup (optional)
+
+Upload `memory-export.json` and `memory.db` to Google Drive for off-machine backup.
+
+### Install
+
+```bash
+pip install oc-memory[drive]
+# or
+uv pip install oc-memory[drive]
+```
+
+### Set up OAuth2 credentials
+
+1. Go to [Google Cloud Console → Credentials](https://console.cloud.google.com/apis/credentials)
+2. Click **Create Credentials → OAuth 2.0 Client ID**
+3. Application type: **Desktop application**
+4. Download the JSON file and save it to:
+   ```
+   ~/.oc-memory/drive-client-creds.json
+   ```
+5. Override the path via env var: `OC_MEMORY_DRIVE_CLIENT_CREDS=/path/to/creds.json`
+
+On first run, a browser window opens for authorization. The token is saved to
+`~/.oc-memory/drive-token.json` (override: `OC_MEMORY_DRIVE_TOKEN`).
+
+### Usage
+
+```bash
+# Upload memory-export.json + memory.db to Drive
+oc-memory backup-drive
+
+# List files in the backup folder
+oc-memory backup-list
+
+# Full backup with Drive upload
+oc-memory backup --drive
+```
+
+### Programmatic usage
+
+```python
+from oc_memory.backup import BackupManager
+from oc_memory.db import MemoryDB
+
+db = MemoryDB("~/.oc-memory/memory.db")
+backup = BackupManager(db, export_dir="~/.oc-memory/export")
+
+# Export JSON first, then upload
+backup.export_json()
+results = backup.backup_drive()
+for r in results:
+    print(f"Uploaded: {r['name']} ({r.get('size', '?')} bytes)")
+```
+
+### Cron example
+
+```bash
+# Daily at 2am — export + Drive upload
+0 2 * * * cd ~/.oc-memory && oc-memory export && oc-memory backup-drive >> /tmp/oc-drive-backup.log 2>&1
+```
+
 ## Automation
 
 ### Via HEARTBEAT.md

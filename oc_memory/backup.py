@@ -91,6 +91,34 @@ class BackupManager:
         except Exception:
             return False
 
+    def backup_drive(
+        self,
+        token_path: str = None,
+        client_creds_path: str = None,
+    ) -> list[dict]:
+        """Upload memory-export.json and memory.db to Google Drive.
+
+        Requires google-api-python-client: pip install oc-memory[drive]
+        """
+        try:
+            from .drive_backup import DriveBackupManager
+        except ImportError:
+            raise ImportError(
+                "Google Drive backup requires extra deps: pip install oc-memory[drive]"
+            )
+
+        kwargs = {}
+        if token_path:
+            kwargs["token_path"] = token_path
+        if client_creds_path:
+            kwargs["client_creds_path"] = client_creds_path
+
+        manager = DriveBackupManager(**kwargs)
+        return manager.upload_backup(
+            export_dir=self.export_dir,
+            db_path=self.db.db_path,
+        )
+
     def restore_from_json(self, json_path: str | Path) -> int:
         """Import cells from a JSON export file."""
         data = json.loads(Path(json_path).read_text())

@@ -195,6 +195,84 @@ if [ -f "$PROMOTE_SCRIPT" ]; then
   fi
 fi
 
+# ── Offer to enable multi-user isolation ─────────────────────────────────────
+
+echo ""
+echo -e "${YELLOW}Optional: Multi-user isolation (owner_id + visibility per cell)${NC}"
+echo "Adds per-user ownership to all memory cells. Required when multiple users"
+echo "share the same memory server. Set OC_MEMORY_ADMIN_USER to your user ID to"
+echo "bypass ownership filters as admin."
+echo -n "Enable multi-user? [y/N] "
+read -r REPLY
+if [[ "$REPLY" =~ ^[Yy]$ ]]; then
+  echo ""
+  echo "  Add this to your shell rc (e.g. ~/.bashrc or ~/.zshrc):"
+  echo ""
+  echo '    export OC_MEMORY_ADMIN_USER="<your-user-id>"'
+  echo ""
+  echo "  Example (use your actual user/agent ID):"
+  echo '    export OC_MEMORY_ADMIN_USER="u0am4blbuuw"'
+  echo ""
+
+  DB_FILE="${OC_MEMORY_DB:-$DATA_DIR/memory.db}"
+  if [ -f "$DB_FILE" ]; then
+    echo "  Existing database found at $DB_FILE."
+    echo -n "  Run migrate-ownership.py to backfill owner_id on existing cells? [y/N] "
+    read -r MIGRATE_REPLY
+    if [[ "$MIGRATE_REPLY" =~ ^[Yy]$ ]]; then
+      echo -n "  Your admin user ID: "
+      read -r ADMIN_ID
+      if [ -n "$ADMIN_ID" ]; then
+        "$PYTHON" "$SCRIPT_DIR/scripts/migrate-ownership.py" --admin-user "$ADMIN_ID" --db "$DB_FILE"
+      else
+        echo "  Skipping — no user ID provided"
+      fi
+    fi
+  else
+    echo "  (No existing database to migrate)"
+  fi
+fi
+
+# ── Offer to set up Google Drive backup ───────────────────────────────────────
+
+echo ""
+echo -e "${YELLOW}Optional: Google Drive backup (uploads memory.db + export to Drive)${NC}"
+echo "Requires: pip install oc-memory[drive] + Google OAuth2 credentials"
+echo -n "Set up Google Drive backup? [y/N] "
+read -r REPLY
+if [[ "$REPLY" =~ ^[Yy]$ ]]; then
+  echo ""
+  echo "  Installing Drive dependencies..."
+  if command -v uv &>/dev/null; then
+    uv pip install -e "$SCRIPT_DIR[drive]"
+  else
+    "$PYTHON" -m pip install -e "$SCRIPT_DIR[drive]"
+  fi
+  echo ""
+  echo "  To set up OAuth2 credentials:"
+  echo "  1. Go to https://console.cloud.google.com/apis/credentials"
+  echo "  2. Create an OAuth 2.0 Client ID → Desktop application"
+  echo "  3. Download the JSON and save to:"
+  echo "     ${OC_MEMORY_DRIVE_CLIENT_CREDS:-$DATA_DIR/drive-client-creds.json}"
+  echo ""
+  echo "  On first use (oc-memory backup-drive), a browser window will open for authorization."
+  echo "  Token saved to: ${OC_MEMORY_DRIVE_TOKEN:-$DATA_DIR/drive-token.json}"
+  echo ""
+  echo "  Usage: oc-memory backup-drive"
+fi
+
+# ── Offer to install cron jobs ────────────────────────────────────────────────
+
+if [ -f "$SCRIPT_DIR/scripts/install-crons.sh" ]; then
+  echo ""
+  echo -e "${YELLOW}Optional: Install cron jobs (context-digest, daily-prune, promote-lessons)${NC}"
+  echo -n "Install cron jobs? [y/N] "
+  read -r REPLY
+  if [[ "$REPLY" =~ ^[Yy]$ ]]; then
+    bash "$SCRIPT_DIR/scripts/install-crons.sh" --workspace "${OC_MEMORY_WORKSPACE:-$(pwd)}"
+  fi
+fi
+
 echo ""
 echo -e "${GREEN}Setup complete!${NC}"
 echo ""

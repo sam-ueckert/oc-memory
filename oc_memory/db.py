@@ -3,6 +3,7 @@
 import hashlib
 import json
 import logging
+import os
 import re
 import sqlite3
 from datetime import datetime, timedelta
@@ -12,6 +13,9 @@ from typing import Optional
 import numpy as np
 
 log = logging.getLogger(__name__)
+
+# Admin user who bypasses all ownership filters (set OC_MEMORY_ADMIN_USER to your user ID)
+ADMIN_USER_ID = os.environ.get("OC_MEMORY_ADMIN_USER", "")
 
 
 def _safe_embedding(raw) -> Optional[np.ndarray]:
@@ -65,6 +69,7 @@ class MemoryDB:
         self.db.row_factory = sqlite3.Row
         self._init_schema()
         self._migrate_schema()
+        self._migrate_add_ownership()
 
     def _init_schema(self):
         self.db.executescript("""
@@ -175,6 +180,30 @@ class MemoryDB:
 
         self.db.commit()
 
+    def _migrate_add_ownership(self):
+        """Add owner_id and visibility columns for multi-user isolation."""
+        cols = {r[1] for r in self.db.execute("PRAGMA table_info(mem_cells)").fetchall()}
+
+        if "owner_id" not in cols:
+            self.db.execute(
+                "ALTER TABLE mem_cells ADD COLUMN owner_id TEXT DEFAULT ''"
+            )
+            self.db.execute(
+                "UPDATE mem_cells SET owner_id = '' WHERE owner_id IS NULL"
+            )
+
+        if "visibility" not in cols:
+            self.db.execute(
+                "ALTER TABLE mem_cells ADD COLUMN visibility TEXT DEFAULT 'private'"
+            )
+            self.db.execute(
+                "UPDATE mem_cells SET visibility = 'private' WHERE visibility IS NULL"
+            )
+
+        self.db.execute("CREATE INDEX IF NOT EXISTS idx_owner ON mem_cells(owner_id)")
+        self.db.execute("CREATE INDEX IF NOT EXISTS idx_visibility ON mem_cells(visibility)")
+        self.db.commit()
+
     # -------------------------------------------------------------------------
     # Core CRUD
     # -------------------------------------------------------------------------
@@ -184,6 +213,8 @@ class MemoryDB:
         cell: dict,
         embedding: Optional[np.ndarray] = None,
         dedup: bool = True,
+        owner_id: str = "",
+        visibility: str = "private",
     ) -> int:
         """Insert a memory cell. Returns row id. Skips on duplicate if dedup=True."""
         now = datetime.utcnow().isoformat()
@@ -203,8 +234,8 @@ class MemoryDB:
 
         cursor = self.db.execute(
             """INSERT INTO mem_cells
-               (scene, cell_type, salience, content, source, tags, embedding, content_hash, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               (scene, cell_type, salience, content, source, tags, embedding, content_hash, owner_id, visibility, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 cell["scene"],
                 cell.get("cell_type", "fact"),
@@ -214,6 +245,8 @@ class MemoryDB:
                 tags_json,
                 emb_blob,
                 content_hash,
+                cell.get("owner_id", owner_id),
+                cell.get("visibility", visibility),
                 now,
                 now,
             ),
@@ -231,11 +264,14 @@ class MemoryDB:
 
         return row_id
 
-    def tag_cell(self, cell_id: int, tags: list[str]):
+    def tag_cell(self, cell_id: int, tags: list[str], caller_id: Optional[str] = None):
         """Add tags to a cell (merges with existing, deduplicates)."""
-        row = self.db.execute("SELECT tags FROM mem_cells WHERE id = ?", (cell_id,)).fetchone()
+        row = self.db.execute("SELECT tags, owner_id FROM mem_cells WHERE id = ?", (cell_id,)).fetchone()
         if not row:
             return
+        if caller_id is not None and ADMIN_USER_ID and caller_id != ADMIN_USER_ID:
+            if row["owner_id"] != caller_id:
+                raise PermissionError(f"Caller {caller_id!r} does not own cell {cell_id}")
         existing = json.loads(row["tags"] or "[]")
         merged = sorted(set(existing + [t.lower().strip() for t in tags]))
         tags_json = json.dumps(merged)
@@ -254,15 +290,24 @@ class MemoryDB:
         )
         self.db.commit()
 
-    def search_by_tag(self, tag: str, limit: int = 20) -> list[dict]:
+    def search_by_tag(self, tag: str, limit: int = 20, caller_id: Optional[str] = None) -> list[dict]:
         """Find cells matching a tag."""
         pattern = f'%"{tag.lower().strip()}"%'
-        rows = self.db.execute(
-            """SELECT id, scene, cell_type, salience, content, source, tags, created_at
-               FROM mem_cells WHERE tags LIKE ?
-               ORDER BY salience DESC LIMIT ?""",
-            (pattern, limit),
-        ).fetchall()
+        if caller_id is not None and ADMIN_USER_ID and caller_id != ADMIN_USER_ID:
+            rows = self.db.execute(
+                """SELECT id, scene, cell_type, salience, content, source, tags, created_at
+                   FROM mem_cells WHERE tags LIKE ?
+                   AND (owner_id = ? OR visibility = 'shared')
+                   ORDER BY salience DESC LIMIT ?""",
+                (pattern, caller_id, limit),
+            ).fetchall()
+        else:
+            rows = self.db.execute(
+                """SELECT id, scene, cell_type, salience, content, source, tags, created_at
+                   FROM mem_cells WHERE tags LIKE ?
+                   ORDER BY salience DESC LIMIT ?""",
+                (pattern, limit),
+            ).fetchall()
         return [dict(r) for r in rows]
 
     def update_embedding(self, cell_id: int, embedding: np.ndarray):
@@ -272,7 +317,11 @@ class MemoryDB:
         )
         self.db.commit()
 
-    def delete_cell(self, cell_id: int):
+    def delete_cell(self, cell_id: int, caller_id: Optional[str] = None):
+        if caller_id is not None and ADMIN_USER_ID and caller_id != ADMIN_USER_ID:
+            row = self.db.execute("SELECT owner_id FROM mem_cells WHERE id = ?", (cell_id,)).fetchone()
+            if row and row["owner_id"] != caller_id:
+                raise PermissionError(f"Caller {caller_id!r} does not own cell {cell_id}")
         self.db.execute("DELETE FROM mem_fts WHERE rowid = ?", (cell_id,))
         self.db.execute("DELETE FROM mem_edges WHERE source_id = ? OR target_id = ?", (cell_id, cell_id))
         self.db.execute("DELETE FROM mem_cells WHERE id = ?", (cell_id,))
@@ -282,22 +331,34 @@ class MemoryDB:
     # Search
     # -------------------------------------------------------------------------
 
-    def search_fts(self, query: str, limit: int = 10) -> list[dict]:
+    def search_fts(self, query: str, limit: int = 10, caller_id: Optional[str] = None) -> list[dict]:
         """Full-text search fallback."""
         tokens = re.findall(r"[a-zA-Z0-9]+", query)
         if not tokens:
             return []
 
         fts_query = " OR ".join(tokens)
-        rows = self.db.execute(
-            """SELECT m.id, m.scene, m.cell_type, m.salience, m.content, m.source, m.tags, m.created_at
-               FROM mem_fts f
-               JOIN mem_cells m ON f.rowid = m.id
-               WHERE mem_fts MATCH ?
-               ORDER BY m.salience DESC
-               LIMIT ?""",
-            (fts_query, limit),
-        ).fetchall()
+        if caller_id is not None and ADMIN_USER_ID and caller_id != ADMIN_USER_ID:
+            rows = self.db.execute(
+                """SELECT m.id, m.scene, m.cell_type, m.salience, m.content, m.source, m.tags, m.created_at
+                   FROM mem_fts f
+                   JOIN mem_cells m ON f.rowid = m.id
+                   WHERE mem_fts MATCH ?
+                   AND (m.owner_id = ? OR m.visibility = 'shared')
+                   ORDER BY m.salience DESC
+                   LIMIT ?""",
+                (fts_query, caller_id, limit),
+            ).fetchall()
+        else:
+            rows = self.db.execute(
+                """SELECT m.id, m.scene, m.cell_type, m.salience, m.content, m.source, m.tags, m.created_at
+                   FROM mem_fts f
+                   JOIN mem_cells m ON f.rowid = m.id
+                   WHERE mem_fts MATCH ?
+                   ORDER BY m.salience DESC
+                   LIMIT ?""",
+                (fts_query, limit),
+            ).fetchall()
 
         for row in rows:
             self.db.execute(
@@ -307,11 +368,17 @@ class MemoryDB:
         self.db.commit()
         return [dict(r) for r in rows]
 
-    def search_vector(self, query_embedding: np.ndarray, limit: int = 10) -> list[dict]:
+    def search_vector(self, query_embedding: np.ndarray, limit: int = 10, caller_id: Optional[str] = None) -> list[dict]:
         """Vector similarity search using cosine similarity."""
-        rows = self.db.execute(
-            "SELECT id, scene, cell_type, salience, content, source, embedding, created_at FROM mem_cells WHERE embedding IS NOT NULL"
-        ).fetchall()
+        if caller_id is not None and ADMIN_USER_ID and caller_id != ADMIN_USER_ID:
+            rows = self.db.execute(
+                "SELECT id, scene, cell_type, salience, content, source, embedding, created_at FROM mem_cells WHERE embedding IS NOT NULL AND (owner_id = ? OR visibility = 'shared')",
+                (caller_id,),
+            ).fetchall()
+        else:
+            rows = self.db.execute(
+                "SELECT id, scene, cell_type, salience, content, source, embedding, created_at FROM mem_cells WHERE embedding IS NOT NULL"
+            ).fetchall()
 
         if not rows:
             return []

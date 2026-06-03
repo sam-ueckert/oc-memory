@@ -97,6 +97,17 @@ TOOLS = [
                     "description": "Optional tags for the cell",
                     "default": [],
                 },
+                "owner_id": {
+                    "type": "string",
+                    "description": "Owner identifier for this cell",
+                    "default": "",
+                },
+                "visibility": {
+                    "type": "string",
+                    "description": "'private' (owner only) or 'shared' (all users)",
+                    "enum": ["private", "shared"],
+                    "default": "private",
+                },
             },
             "required": ["content"],
         },
@@ -109,6 +120,7 @@ TOOLS = [
             "properties": {
                 "query": {"type": "string", "description": "Search query"},
                 "limit": {"type": "integer", "description": "Max results", "default": 10, "minimum": 1, "maximum": 100},
+                "caller_id": {"type": "string", "description": "Caller identifier for ownership scoping. Omit for admin access."},
             },
             "required": ["query"],
         },
@@ -121,6 +133,7 @@ TOOLS = [
             "properties": {
                 "tag": {"type": "string", "description": "Tag to search for"},
                 "limit": {"type": "integer", "description": "Max results", "default": 20, "minimum": 1, "maximum": 100},
+                "caller_id": {"type": "string", "description": "Caller identifier for ownership scoping. Omit for admin access."},
             },
             "required": ["tag"],
         },
@@ -132,6 +145,7 @@ TOOLS = [
             "type": "object",
             "properties": {
                 "id": {"type": "integer", "description": "Cell ID to delete"},
+                "caller_id": {"type": "string", "description": "Caller identifier for ownership scoping. Omit for admin access."},
             },
             "required": ["id"],
         },
@@ -148,6 +162,7 @@ TOOLS = [
                     "items": {"type": "string"},
                     "description": "Tags to add",
                 },
+                "caller_id": {"type": "string", "description": "Caller identifier for ownership scoping. Omit for admin access."},
             },
             "required": ["id", "tags"],
         },
@@ -243,6 +258,8 @@ def tool_memory_store(args: dict) -> str:
         "scene": args.get("scene", "general"),
         "salience": float(args.get("salience", 0.5)),
         "tags": args.get("tags", []),
+        "owner_id": args.get("owner_id", ""),
+        "visibility": args.get("visibility", "private"),
     }
     db = get_db()
     embedder = get_embedder()
@@ -261,6 +278,7 @@ def tool_memory_search(args: dict) -> str:
     if not query:
         raise ValueError("query is required")
     limit = int(args.get("limit") or 10)
+    caller_id = args.get("caller_id") or None
     db = get_db()
     embedder = get_embedder()
     results = []
@@ -268,12 +286,12 @@ def tool_memory_search(args: dict) -> str:
     if embedder.is_available():
         try:
             qemb = embedder.embed(query)
-            results = db.search_vector(qemb, limit=limit)
+            results = db.search_vector(qemb, limit=limit, caller_id=caller_id)
             used_vector = True
         except Exception as e:
             _log(f"[mcp] vector search failed: {e}")
     if not results:
-        results = db.search_fts(query, limit=limit)
+        results = db.search_fts(query, limit=limit, caller_id=caller_id)
     out = []
     for r in results:
         out.append({
@@ -293,8 +311,9 @@ def tool_memory_search_tag(args: dict) -> str:
     if not tag:
         raise ValueError("tag is required")
     limit = int(args.get("limit") or 20)
+    caller_id = args.get("caller_id") or None
     db = get_db()
-    results = db.search_by_tag(tag, limit=limit)
+    results = db.search_by_tag(tag, limit=limit, caller_id=caller_id)
     out = [{"id": r["id"], "scene": r["scene"], "cell_type": r["cell_type"],
             "salience": r["salience"], "content": r["content"], "tags": r.get("tags", "[]")}
            for r in results]
@@ -306,12 +325,13 @@ def tool_memory_forget(args: dict) -> str:
     if cell_id is None:
         raise ValueError("id is required")
     cell_id = int(cell_id)
+    caller_id = args.get("caller_id") or None
     db = get_db()
     # Check cell exists
     row = db.db.execute("SELECT id FROM mem_cells WHERE id = ?", (cell_id,)).fetchone()
     if not row:
         raise ValueError(f"Cell {cell_id} not found")
-    db.delete_cell(cell_id)
+    db.delete_cell(cell_id, caller_id=caller_id)
     return json.dumps({"id": cell_id, "deleted": True})
 
 
@@ -323,8 +343,9 @@ def tool_memory_tag(args: dict) -> str:
     if not tags:
         raise ValueError("tags must be a non-empty list")
     cell_id = int(cell_id)
+    caller_id = args.get("caller_id") or None
     db = get_db()
-    db.tag_cell(cell_id, tags)
+    db.tag_cell(cell_id, tags, caller_id=caller_id)
     return json.dumps({"id": cell_id, "tags_added": tags})
 
 

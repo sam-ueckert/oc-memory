@@ -19,11 +19,11 @@ ollama = [
     "httpx>=0.27.0",
 ]
 drive = [
-    "google-api-python-client>=2.0.0",
-    "google-auth>=2.0.0",
-    "google-auth-oauthlib>=1.0.0",
-    "google-auth-httplib2>=0.2.0",
+    "google-api-python-client>=2.0",
+    "google-auth-httplib2>=0.1",
+    "google-auth-oauthlib>=0.5",
 ]
+multi-user = []  # No extra deps — enables owner_id/visibility per cell and OC_MEMORY_ADMIN_USER bypass
 dev = [
     "pytest>=8.0.0",
     "ruff>=0.4.0",
