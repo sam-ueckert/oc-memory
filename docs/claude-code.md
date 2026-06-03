@@ -40,8 +40,8 @@ Or do it manually: `oc-memory mcp-setup` prints the config snippet.
 Add these marker blocks to your `CLAUDE.md` so the digest and learned rules are injected automatically:
 
 ```markdown
-<!-- OC_MEMORY_DIGEST_START -->
-<!-- OC_MEMORY_DIGEST_END -->
+<!-- ARCHY_DIGEST_START -->
+<!-- ARCHY_DIGEST_END -->
 
 <!-- LEARNED_RULES_START -->
 ## Learned Rules
@@ -50,6 +50,8 @@ Add these marker blocks to your `CLAUDE.md` so the digest and learned rules are 
 ```
 
 Both blocks are replaced in-place by their respective cron scripts.
+
+The digest block uses `ARCHY_DIGEST_*` markers; the learned-rules block uses `LEARNED_RULES_*`. Do not rename them — the scripts look for these exact strings.
 
 ---
 
@@ -93,8 +95,8 @@ Or let `scripts/install-crons.sh` add it for you.
 
 1. **Tag a correction**: when Claude makes a mistake or you correct it, store the lesson and tag it:
    ```bash
-   mem quick-store lessons lesson 0.9 "Never truncate error messages — always show full output"
-   mem tag <id> correction
+   MEM_LOCAL=1 mem store lessons lesson 0.9 "Never truncate error messages — always show full output"
+   MEM_LOCAL=1 mem tag <id> correction
    ```
 
 2. **promote-lessons.sh** runs weekly, queries all `correction`-tagged cells, synthesizes behavioral rules via the Anthropic API, and injects them into `CLAUDE.md` between the `<!-- LEARNED_RULES_START/END -->` markers.
@@ -193,20 +195,20 @@ See [docs/multi-user.md](multi-user.md) for full details.
 ## Quick Reference
 
 ```bash
-# Store a memory
-mem quick-store <scene> <type> <salience> "<content>"
-mem quick-store projects fact 0.8 "API uses JWT auth with 24h expiry"
+# Store a memory (local mode — no server required)
+MEM_LOCAL=1 mem store <scene> <type> <salience> "<content>"
+MEM_LOCAL=1 mem store projects fact 0.8 "API uses JWT auth with 24h expiry"
 
 # Search
-mem search "JWT auth"
-mem search-tag "correction"
+MEM_LOCAL=1 mem search "JWT auth"
+MEM_LOCAL=1 mem search-tag "correction"
 
 # Tag for learning loop
-mem tag <id> correction
+MEM_LOCAL=1 mem tag <id> correction
 
 # Stats
-mem stats
-mem scenes
+MEM_LOCAL=1 mem stats
+MEM_LOCAL=1 mem scenes
 
 # Trigger digest update now
 WORKSPACE=$(pwd) bash ~/bin/gen-context-digest.sh
@@ -215,5 +217,10 @@ WORKSPACE=$(pwd) bash ~/bin/gen-context-digest.sh
 API_TOKEN=$ANTHROPIC_API_KEY WORKSPACE=$(pwd) bash ~/bin/promote-lessons.sh
 
 # Export for git backup
-mem export
+MEM_LOCAL=1 mem export
+
+# Set MEM_LOCAL globally to avoid prefixing every command
+export MEM_LOCAL=1
+mem stats
+mem search "JWT auth"
 ```

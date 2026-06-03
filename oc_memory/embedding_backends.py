@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import ssl
 import urllib.request
 from abc import ABC, abstractmethod
 from pathlib import Path
@@ -54,6 +55,36 @@ class EmbeddingBackend(ABC):
 # ── ONNX backend ──────────────────────────────────────────────────────────────
 
 
+def _make_ssl_context() -> ssl.SSLContext | None:
+    """Return an SSL context that respects corporate proxy CA bundles.
+
+    Honours (in priority order):
+      1. OC_MEMORY_SSL_NO_VERIFY=1  — disable verification entirely (last resort)
+      2. REQUESTS_CA_BUNDLE / SSL_CERT_FILE — path to a custom CA bundle
+      3. System default CAs (certifi if installed, otherwise platform CAs)
+    """
+    if os.environ.get("OC_MEMORY_SSL_NO_VERIFY", "").strip() == "1":
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        return ctx
+
+    ca_bundle = os.environ.get("REQUESTS_CA_BUNDLE") or os.environ.get("SSL_CERT_FILE")
+    if ca_bundle:
+        ctx = ssl.create_default_context(cafile=ca_bundle)
+        return ctx
+
+    # Try certifi for a well-maintained CA bundle
+    try:
+        import certifi  # type: ignore
+        ctx = ssl.create_default_context(cafile=certifi.where())
+        return ctx
+    except ImportError:
+        pass
+
+    return None  # fall back to urllib default
+
+
 def _show_download_progress(block_num: int, block_size: int, total_size: int) -> None:
     downloaded = block_num * block_size
     if total_size > 0:
@@ -71,13 +102,26 @@ def download_onnx_model(cache_dir: Path = MODEL_CACHE_DIR) -> Path:
     onnx_dir = cache_dir
     onnx_dir.mkdir(parents=True, exist_ok=True)
 
+    ssl_ctx = _make_ssl_context()
+    opener = urllib.request.build_opener(
+        urllib.request.HTTPSHandler(context=ssl_ctx) if ssl_ctx else urllib.request.HTTPSHandler()
+    )
+
     for filename, url in MODEL_FILES.items():
         dest = onnx_dir / filename
         if dest.exists():
             continue
         print(f"Downloading {filename}...")
         try:
-            urllib.request.urlretrieve(url, dest, reporthook=_show_download_progress)
+            req = urllib.request.Request(url)
+            with opener.open(req) as resp, open(dest, "wb") as fh:
+                total = int(resp.headers.get("Content-Length", 0))
+                downloaded = 0
+                block = 8192
+                while chunk := resp.read(block):
+                    fh.write(chunk)
+                    downloaded += len(chunk)
+                    _show_download_progress(downloaded // block, block, total)
             print()  # newline after progress
         except Exception as exc:
             # Clean up partial download

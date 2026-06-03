@@ -394,6 +394,34 @@ def main():
         from .mcp_config import print_setup_instructions
         print_setup_instructions()
 
+    elif cmd == "config":
+        # oc-memory config --client <claude|cursor|openclaw> [--url <http://host:port/mcp>]
+        from .mcp_config import (
+            claude_code_config, cursor_config, openclaw_config,
+            claude_code_http_config, cursor_http_config, openclaw_http_config,
+        )
+        args = sys.argv[2:]
+        client = "claude"
+        url = ""
+        if "--client" in args:
+            idx = args.index("--client")
+            if idx + 1 < len(args):
+                client = args[idx + 1].lower()
+        if "--url" in args:
+            idx = args.index("--url")
+            if idx + 1 < len(args):
+                url = args[idx + 1]
+
+        if client in ("claude", "claude-code"):
+            print(claude_code_http_config(url) if url else claude_code_config())
+        elif client == "cursor":
+            print(cursor_http_config(url) if url else cursor_config())
+        elif client in ("openclaw", "oc"):
+            print(openclaw_http_config(url) if url else openclaw_config())
+        else:
+            print(f"Unknown client: {client}. Choose: claude, cursor, openclaw", file=sys.stderr)
+            sys.exit(1)
+
     else:
         print(f"Unknown command: {cmd}")
         print(__doc__)

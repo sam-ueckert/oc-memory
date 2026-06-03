@@ -1,0 +1,710 @@
+#!/usr/bin/env python3
+"""
+oc-memory TUI installer
+
+Usage:
+    python3 install.py [--yes] [--local | --docker]
+
+Flags:
+    --yes, -y       Non-interactive: accept all defaults
+    --local         Skip mode selection, force local Python install
+    --docker        Skip mode selection, force Docker install
+
+Environment overrides:
+    NONINTERACTIVE=1        Same as --yes
+    INSTALL_MODE=local      Same as --local
+    INSTALL_MODE=docker     Same as --docker
+    OC_MEMORY_HOME          Override data directory (local mode)
+    OC_MEMORY_SSL_NO_VERIFY=1   Skip TLS cert verification (corporate proxies)
+    REQUESTS_CA_BUNDLE      Path to custom CA bundle
+    OC_MEMORY_OC_CONFIG     Path to openclaw.json
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import platform
+import shutil
+import subprocess
+import sys
+import time
+import urllib.request
+from pathlib import Path
+
+# ── Terminal colors (ANSI) ────────────────────────────────────────────────────
+
+RED    = "\033[0;31m"
+GREEN  = "\033[0;32m"
+YELLOW = "\033[1;33m"
+BLUE   = "\033[0;34m"
+CYAN   = "\033[0;36m"
+BOLD   = "\033[1m"
+DIM    = "\033[2m"
+NC     = "\033[0m"
+
+def ok(msg):    print(f"  {GREEN}✓{NC} {msg}")
+def warn(msg):  print(f"  {YELLOW}⚠{NC} {msg}")
+def err(msg):   print(f"  {RED}✗{NC} {msg}")
+def info(msg):  print(f"  {BLUE}→{NC} {msg}")
+def hdr(title): print(f"\n{BOLD}  ── {title} {'─' * max(0, 46 - len(title))}{NC}\n")
+def nl():       print()
+
+# ── Non-interactive / mode flags ──────────────────────────────────────────────
+
+YES          = "--yes" in sys.argv or "-y" in sys.argv or os.environ.get("NONINTERACTIVE") == "1"
+_mode_flag   = "docker" if "--docker" in sys.argv else "local" if "--local" in sys.argv else ""
+INSTALL_MODE = _mode_flag or os.environ.get("INSTALL_MODE", "")
+SCRIPT_DIR   = Path(__file__).parent.resolve()
+
+# ── UI primitives ─────────────────────────────────────────────────────────────
+
+def ask(prompt: str, default: bool = True) -> bool:
+    """Yes/no prompt. Auto-returns default in --yes mode."""
+    if YES:
+        label = "y" if default else "n"
+        print(f"  {DIM}{prompt} [auto: {label}]{NC}")
+        return default
+    marker = "Y/n" if default else "y/N"
+    raw = input(f"  {prompt} [{marker}]: ").strip().lower()
+    return raw in ("y", "yes") if raw else default
+
+
+def prompt_text(prompt: str, default: str = "") -> str:
+    """Free-text prompt. Auto-returns default in --yes mode."""
+    if YES:
+        print(f"  {DIM}{prompt} [auto: {default!r}]{NC}")
+        return default
+    raw = input(f"  {prompt} [{default}]: ").strip()
+    return raw if raw else default
+
+
+def menu(title: str, options: list[tuple[str, str]], default: int = 0) -> int:
+    """Numbered single-select menu. Returns 0-based index."""
+    print(f"\n{BOLD}  {title}{NC}\n")
+    for i, (label, desc) in enumerate(options):
+        dot = f"{GREEN}●{NC}" if i == default else f"{DIM}○{NC}"
+        rec = f"  {CYAN}(recommended){NC}" if i == default else ""
+        print(f"    {dot} {BOLD}{i + 1}.{NC} {BOLD}{label}{NC}{rec}")
+        if desc:
+            print(f"         {DIM}{desc}{NC}")
+    nl()
+    if YES:
+        print(f"  {DIM}[auto: {default + 1}]{NC}")
+        return default
+    while True:
+        raw = input(f"  Select [1-{len(options)}] (default {default + 1}): ").strip()
+        if not raw:
+            return default
+        try:
+            idx = int(raw) - 1
+            if 0 <= idx < len(options):
+                return idx
+        except ValueError:
+            pass
+
+
+def checklist(title: str, items: list[tuple[str, str, str]], defaults: list[int] | None = None) -> list[str]:
+    """Toggle-list multi-select.
+
+    items  = [(key, label, description), ...]
+    defaults = list of indices to pre-select (default: all)
+    Returns list of selected keys.
+    """
+    selected: set[int] = set(defaults if defaults is not None else range(len(items)))
+    print(f"\n{BOLD}  {title}{NC}")
+    print(f"  {DIM}Enter a number to toggle, or press Enter to confirm.{NC}\n")
+
+    while True:
+        for i, (_, label, desc) in enumerate(items):
+            mark = f"{GREEN}✓{NC}" if i in selected else " "
+            print(f"    [{mark}] {BOLD}{i + 1}.{NC} {BOLD}{label}{NC} — {DIM}{desc}{NC}")
+        nl()
+        if YES:
+            print(f"  {DIM}[auto: confirming selections]{NC}")
+            break
+        raw = input("  Toggle number, or Enter to confirm: ").strip()
+        if not raw:
+            break
+        try:
+            idx = int(raw) - 1
+            if 0 <= idx < len(items):
+                selected.discard(idx) if idx in selected else selected.add(idx)
+                # redraw
+                print(f"\033[{len(items) + 2}A", end="")  # move cursor up
+                print("\033[J", end="")                    # clear to end of screen
+        except ValueError:
+            pass
+
+    return [items[i][0] for i in sorted(selected)]
+
+
+# ── Header ────────────────────────────────────────────────────────────────────
+
+def print_header() -> None:
+    print()
+    print(f"{CYAN}  ╔══════════════════════════════════════════════════╗{NC}")
+    print(f"{CYAN}  ║{NC}{BOLD}          oc-memory v2 — MCP memory server          {NC}{CYAN}║{NC}")
+    print(f"{CYAN}  ╚══════════════════════════════════════════════════╝{NC}")
+    print()
+    print(f"  Persistent memory for {BOLD}Claude Code{NC}, {BOLD}Cursor{NC}, and {BOLD}OpenClaw{NC}.")
+    print(f"  {DIM}SQLite + FTS5 + ONNX embeddings · 12 MCP tools · zero external deps{NC}")
+    print()
+
+
+# ── Docker helpers ────────────────────────────────────────────────────────────
+
+def find_compose() -> tuple[str, list[str]] | None:
+    """Return (binary, subcommand_list) for docker compose, or None."""
+    if shutil.which("docker"):
+        r = subprocess.run(["docker", "compose", "version"], capture_output=True)
+        if r.returncode == 0:
+            return ("docker", ["compose"])
+    if shutil.which("docker-compose"):
+        return ("docker-compose", [])
+    return None
+
+
+def wait_for_url(url: str, timeout: int = 60, interval: int = 2) -> bool:
+    """Poll url until it returns HTTP 2xx. Returns True on success."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            with urllib.request.urlopen(url, timeout=3) as resp:
+                if resp.status < 300:
+                    print()
+                    return True
+        except Exception:
+            pass
+        print(".", end="", flush=True)
+        time.sleep(interval)
+    print()
+    return False
+
+
+def write_compose_override(port: int) -> None:
+    """Write docker-compose.override.yml if port differs from default 8765."""
+    if port == 8765:
+        return
+    override = (
+        "services:\n"
+        "  oc-memory:\n"
+        f"    ports:\n      - \"{port}:{port}\"\n"
+        f"    environment:\n      - MCP_PORT={port}\n"
+    )
+    override_path = SCRIPT_DIR / "docker-compose.override.yml"
+    override_path.write_text(override)
+    ok(f"Wrote docker-compose.override.yml (port {port})")
+
+
+# ── Docker install ────────────────────────────────────────────────────────────
+
+def do_docker() -> int:
+    """Run Docker install flow. Returns the port the server is listening on."""
+    hdr("Docker Setup")
+
+    compose = find_compose()
+    if not compose:
+        err("Docker not found. Install Docker Desktop: https://docs.docker.com/get-docker/")
+        sys.exit(1)
+    ok(f"Docker found ({compose[0]})")
+
+    port = int(prompt_text("MCP server port", "8765") or "8765")
+    write_compose_override(port)
+
+    nl()
+    info("Starting oc-memory container (first build may take a minute)…")
+    binary, sub = compose
+    cmd = [binary] + sub + ["-f", str(SCRIPT_DIR / "docker-compose.yml"), "up", "-d", "--build"]
+    result = subprocess.run(cmd, cwd=str(SCRIPT_DIR))
+    if result.returncode != 0:
+        err("docker compose up failed — check Docker logs.")
+        sys.exit(1)
+
+    health_url = f"http://localhost:{port}/health"
+    print(f"  Waiting for server at {health_url}", end="", flush=True)
+    if wait_for_url(health_url, timeout=90):
+        ok(f"Server ready at http://localhost:{port}/mcp")
+    else:
+        warn(f"Server did not respond within 90s — check: docker logs oc-memory")
+
+    return port
+
+
+# ── Local Python install ───────────────────────────────────────────────────────
+
+def do_local() -> None:
+    """Run local Python install flow."""
+    hdr("Local Python Setup")
+
+    if sys.version_info < (3, 11):
+        err(f"Python 3.11+ required (found {sys.version_info.major}.{sys.version_info.minor})")
+        sys.exit(1)
+    ok(f"Python {sys.version_info.major}.{sys.version_info.minor}")
+
+    data_dir = Path(os.environ.get("OC_MEMORY_HOME", Path.home() / ".oc-memory"))
+    data_dir.mkdir(parents=True, exist_ok=True)
+    ok(f"Data directory: {data_dir}")
+
+    nl()
+    info("Installing oc-memory…")
+    if shutil.which("uv"):
+        subprocess.run(["uv", "pip", "install", "-e", str(SCRIPT_DIR)], check=True)
+    else:
+        subprocess.run([sys.executable, "-m", "pip", "install", "-e", str(SCRIPT_DIR)], check=True)
+    ok("oc-memory installed")
+
+    nl()
+    info("Downloading ONNX embedding model (bge-small-en-v1.5, ~24 MB)…")
+    result = subprocess.run(
+        [sys.executable, "-c",
+         "from oc_memory.embedding_backends import download_onnx_model, is_model_downloaded\n"
+         "if is_model_downloaded(): print('cached')\n"
+         "else: download_onnx_model(); print('downloaded')"],
+        capture_output=True, text=True,
+    )
+    if result.returncode == 0:
+        label = "already cached" if result.stdout.strip() == "cached" else "ready"
+        ok(f"Embedding model {label}")
+    else:
+        warn("ONNX model download failed — proceeding in FTS-only mode.")
+        info("To fix on a corporate network:")
+        info("  export OC_MEMORY_SSL_NO_VERIFY=1")
+        info("  export REQUESTS_CA_BUNDLE=/path/to/corp-ca.crt")
+        info("Retry later: oc-memory embed  (after the model is cached)")
+
+
+# ── MCP client config patching ────────────────────────────────────────────────
+
+def _http_entry(port: int) -> dict:
+    return {"type": "http", "url": f"http://localhost:{port}/mcp"}
+
+
+def _stdio_entry() -> dict:
+    """Generate stdio entry using installed oc-memory-mcp entry point."""
+    cmd = shutil.which("oc-memory-mcp") or "oc-memory-mcp"
+    return {"command": cmd, "args": []}
+
+
+def patch_claude_json(entry: dict) -> None:
+    claude_json = Path.home() / ".claude.json"
+    if not claude_json.exists():
+        claude_json.write_text(json.dumps({"mcpServers": {}}, indent=2))
+        info("Created ~/.claude.json")
+    config = json.loads(claude_json.read_text())
+    config.setdefault("mcpServers", {})
+    if "oc-memory" in config["mcpServers"]:
+        ok("oc-memory already in ~/.claude.json — skipping")
+    else:
+        config["mcpServers"]["oc-memory"] = entry
+        claude_json.write_text(json.dumps(config, indent=2))
+        ok("Patched ~/.claude.json")
+        info("Restart Claude Code to activate")
+
+
+def patch_cursor_json(entry: dict) -> None:
+    cursor_json = Path.home() / ".cursor" / "mcp.json"
+    cursor_json.parent.mkdir(parents=True, exist_ok=True)
+    config = json.loads(cursor_json.read_text()) if cursor_json.exists() else {}
+    config.setdefault("mcpServers", {})
+    if "oc-memory" in config["mcpServers"]:
+        ok("oc-memory already in ~/.cursor/mcp.json — skipping")
+    else:
+        config["mcpServers"]["oc-memory"] = entry
+        cursor_json.write_text(json.dumps(config, indent=2))
+        ok("Patched ~/.cursor/mcp.json")
+        info("Restart Cursor to activate")
+
+
+def patch_openclaw_json(entry: dict) -> None:
+    oc_json_path = os.environ.get("OC_MEMORY_OC_CONFIG", str(Path.home() / ".openclaw" / "openclaw.json"))
+    oc_json = Path(oc_json_path)
+    if not oc_json.exists():
+        warn(f"openclaw.json not found at {oc_json} — skipping")
+        return
+    config = json.loads(oc_json.read_text())
+    config.setdefault("mcp", {}).setdefault("servers", [])
+    existing_names = [s.get("name") for s in config["mcp"]["servers"]]
+    if "oc-memory" in existing_names:
+        ok("oc-memory already in openclaw.json — skipping")
+    else:
+        server_entry = {"name": "oc-memory", "transport": "stdio", **entry} if "command" in entry else {
+            "name": "oc-memory", "transport": "http", "url": entry["url"]
+        }
+        config["mcp"]["servers"].append(server_entry)
+        oc_json.write_text(json.dumps(config, indent=2))
+        ok(f"Patched {oc_json}")
+        info("Restart OpenClaw to activate")
+
+
+def do_client_config(mcp_entry: dict) -> None:
+    hdr("MCP Client Configuration")
+
+    # Detect what's present
+    has_claude  = (Path.home() / ".claude.json").exists()
+    has_cursor  = (Path.home() / ".cursor").exists()
+    oc_path     = os.environ.get("OC_MEMORY_OC_CONFIG", str(Path.home() / ".openclaw" / "openclaw.json"))
+    has_openclaw = Path(oc_path).exists()
+
+    items = [
+        ("claude",   "Claude Code",
+         f"{'detected' if has_claude else 'will create'} ~/.claude.json"),
+        ("cursor",   "Cursor",
+         f"{'detected' if has_cursor else 'not detected — will create'} ~/.cursor/mcp.json"),
+        ("openclaw", "OpenClaw",
+         f"{'detected' if has_openclaw else f'not found at {oc_path}'} — skip if not using"),
+    ]
+    # Pre-select detected clients; always pre-select Claude
+    defaults = [i for i, (k, _, _) in enumerate(items) if k == "claude" or
+                (k == "cursor" and has_cursor) or (k == "openclaw" and has_openclaw)]
+
+    selected = checklist("Which AI clients should oc-memory connect to?", items, defaults)
+
+    nl()
+    if "claude" in selected:
+        patch_claude_json(mcp_entry)
+    if "cursor" in selected:
+        patch_cursor_json(mcp_entry)
+    if "openclaw" in selected:
+        patch_openclaw_json(mcp_entry)
+
+
+# ── mem CLI ────────────────────────────────────────────────────────────────────
+
+def install_mem_cli(docker_port: int | None) -> None:
+    mem_cli_src = SCRIPT_DIR / "cli" / "mem"
+    if not mem_cli_src.exists():
+        warn("cli/mem not found — skipping mem CLI install")
+        return
+
+    bin_dir = Path.home() / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    dest = bin_dir / "mem"
+    shutil.copy(mem_cli_src, dest)
+    dest.chmod(0o755)
+    ok(f"Installed mem CLI to ~/bin/mem")
+
+    if Path("/usr/local/bin").exists() and shutil.which("mem") is None:
+        if str(bin_dir) not in os.environ.get("PATH", ""):
+            warn("~/bin is not in your PATH. Add it:")
+            shell_rc = ".zshrc" if os.environ.get("SHELL", "").endswith("zsh") else ".bashrc"
+            info(f'  echo \'export PATH="$HOME/bin:$PATH"\' >> ~/{shell_rc}')
+            info(f"  source ~/{shell_rc}")
+
+    nl()
+    if docker_port:
+        info(f"mem CLI points at Docker server (http://localhost:{docker_port})")
+        info("  mem stats")
+        info("  mem search 'first memory'")
+        if docker_port != 8765:
+            info(f'  export MEM_MCP_URL="http://localhost:{docker_port}"   # add to shell rc')
+    else:
+        info("mem CLI is in local mode by default (no server needed):")
+        info("  export MEM_LOCAL=1")
+        info("  mem stats")
+        info("  mem store myproject fact 0.8 'My first memory'")
+
+
+# ── Context digest ─────────────────────────────────────────────────────────────
+
+def install_context_digest() -> None:
+    src = SCRIPT_DIR / "skills" / "context-digest" / "scripts" / "gen-context-digest.sh"
+    if not src.exists():
+        warn("gen-context-digest.sh not found — skipping")
+        return
+    dest = Path.home() / "bin" / "gen-context-digest.sh"
+    shutil.copy(src, dest)
+    dest.chmod(0o755)
+    ok("Installed gen-context-digest.sh to ~/bin/")
+    info("Add markers to your CLAUDE.md or MEMORY.md:")
+    info("  <!-- ARCHY_DIGEST_START -->")
+    info("  <!-- ARCHY_DIGEST_END -->")
+    info("Test: WORKSPACE=$(pwd) bash ~/bin/gen-context-digest.sh")
+
+
+# ── Promote lessons ────────────────────────────────────────────────────────────
+
+def install_promote_lessons() -> None:
+    src = SCRIPT_DIR / "skills" / "promote-lessons" / "scripts" / "promote-lessons.sh"
+    if not src.exists():
+        warn("promote-lessons.sh not found — skipping")
+        return
+    dest = Path.home() / "bin" / "promote-lessons.sh"
+    shutil.copy(src, dest)
+    dest.chmod(0o755)
+    ok("Installed promote-lessons.sh to ~/bin/")
+    info("Add markers to your SOUL.md or CLAUDE.md:")
+    info("  <!-- LEARNED_RULES_START -->")
+    info("  ## Learned Rules")
+    info("  *No rules yet.*")
+    info("  <!-- LEARNED_RULES_END -->")
+    info("Run:")
+    info("  Claude Code: API_TOKEN=$ANTHROPIC_API_KEY WORKSPACE=$(pwd) bash ~/bin/promote-lessons.sh")
+    info("  OpenClaw:    API_TOKEN=<gateway-token> WORKSPACE=$(pwd) bash ~/bin/promote-lessons.sh")
+
+
+# ── Multi-user ────────────────────────────────────────────────────────────────
+
+def setup_multi_user() -> None:
+    shell_rc = ".zshrc" if os.environ.get("SHELL", "").endswith("zsh") else ".bashrc"
+    info("Add to your shell rc:")
+    info(f'  export OC_MEMORY_ADMIN_USER="<your-user-id>"   # add to ~/{shell_rc}')
+    db_path = Path(os.environ.get("OC_MEMORY_DB",
+                                  Path.home() / ".oc-memory" / "memory.db"))
+    if db_path.exists() and not YES:
+        nl()
+        if ask("Backfill owner_id on existing database?", default=False):
+            admin_id = input("  Admin user ID: ").strip()
+            if admin_id:
+                migrate = SCRIPT_DIR / "scripts" / "migrate-ownership.py"
+                subprocess.run([sys.executable, str(migrate),
+                                "--admin-user", admin_id, "--db", str(db_path)])
+                ok(f"Migration complete")
+            else:
+                info("Skipping — no user ID provided")
+
+
+# ── Google Drive ───────────────────────────────────────────────────────────────
+
+def setup_drive() -> None:
+    info("Installing Drive dependencies…")
+    if shutil.which("uv"):
+        subprocess.run(["uv", "pip", "install", "-e", f"{SCRIPT_DIR}[drive]"], check=True)
+    else:
+        subprocess.run([sys.executable, "-m", "pip", "install", "-e", f"{SCRIPT_DIR}[drive]"], check=True)
+    ok("Drive dependencies installed")
+    info("Set up OAuth2 credentials:")
+    info("  1. https://console.cloud.google.com/apis/credentials")
+    info("  2. Create OAuth 2.0 Client ID → Desktop app")
+    info("  3. Save JSON to ~/.oc-memory/drive-client-creds.json")
+    info("  First run: oc-memory backup-drive  (opens browser for auth)")
+
+
+# ── Cron jobs ─────────────────────────────────────────────────────────────────
+
+def _crontab_has(entry: str) -> bool:
+    r = subprocess.run(["crontab", "-l"], capture_output=True, text=True)
+    return entry in (r.stdout or "")
+
+
+def _add_cron(label: str, entry: str) -> None:
+    if _crontab_has(entry):
+        ok(f"Already installed: {label}")
+        return
+    r = subprocess.run(["crontab", "-l"], capture_output=True, text=True)
+    existing = r.stdout if r.returncode == 0 else ""
+    new_crontab = existing.rstrip("\n") + "\n" + entry + "\n"
+    proc = subprocess.run(["crontab", "-"], input=new_crontab, text=True, capture_output=True)
+    if proc.returncode == 0:
+        ok(f"Installed cron: {label}")
+    else:
+        warn(f"Failed to install cron: {label} — {proc.stderr.strip()}")
+
+
+def setup_crons(features: list[str], workspace: str, docker_port: int | None, api_token: str) -> None:
+    if platform.system() == "Darwin" or shutil.which("crontab"):
+        pass
+    else:
+        warn("crontab not found — skipping cron setup")
+        return
+
+    mem_prefix = f"MEM_MCP_URL=http://localhost:{docker_port} " if docker_port else "MEM_LOCAL=1 "
+    mem_cmd    = f"{Path.home()}/bin/mem"
+    oc_cmd     = "oc-memory"
+
+    if "digest" in features:
+        digest_script = f"{Path.home()}/bin/gen-context-digest.sh"
+        if Path(digest_script).exists():
+            entry = f"0 */3 * * * OC_MEMORY_WORKSPACE=\"{workspace}\" bash {digest_script} >> /tmp/oc-memory-digest.log 2>&1"
+            _add_cron("context-digest (every 3h)", entry)
+        else:
+            warn("gen-context-digest.sh not installed — skipping digest cron")
+
+    if "embed" in features:
+        # Memory extraction: embed new cells + consolidate scenes
+        entry = f"*/30 * * * * {mem_prefix}{oc_cmd} embed >> /tmp/oc-memory-embed.log 2>&1"
+        _add_cron("memory embed (every 30min)", entry)
+        entry2 = f"0 2 * * * {oc_cmd} consolidate >> /tmp/oc-memory-consolidate.log 2>&1"
+        _add_cron("memory consolidate (daily 2am)", entry2)
+
+    if "prune" in features:
+        entry = f"0 3 * * * {oc_cmd} decay >> /tmp/oc-memory-decay.log 2>&1"
+        _add_cron("memory decay (daily 3am)", entry)
+
+    if "promote" in features:
+        lessons_script = f"{Path.home()}/bin/promote-lessons.sh"
+        if Path(lessons_script).exists() and api_token:
+            entry = (
+                f'0 3 * * 0 API_TOKEN="{api_token}" '
+                f'OC_MEMORY_WORKSPACE="{workspace}" '
+                f"bash {lessons_script} >> /tmp/oc-memory-lessons.log 2>&1"
+            )
+            _add_cron("promote-lessons (Sunday 3am)", entry)
+        elif not api_token:
+            warn("No API token — skipping promote-lessons cron (set API_TOKEN manually)")
+        else:
+            warn("promote-lessons.sh not installed — skipping cron")
+
+    # Show installed entries
+    nl()
+    info("Active oc-memory crons:")
+    r = subprocess.run(["crontab", "-l"], capture_output=True, text=True)
+    lines = [ln for ln in (r.stdout or "").splitlines()
+             if any(k in ln for k in ("oc-memory", "gen-context-digest", "promote-lessons"))]
+    for ln in lines:
+        print(f"    {DIM}{ln}{NC}")
+    if not lines:
+        print(f"    {DIM}(none){NC}")
+
+
+# ── Optional features ──────────────────────────────────────────────────────────
+
+def do_optional_features(docker_port: int | None) -> None:
+    hdr("Optional Features")
+
+    items = [
+        ("mem_cli",    "mem CLI",          "Quick memory commands in your terminal"),
+        ("digest",     "Context digest",   "Prime agent context with top memories at session start"),
+        ("promote",    "Promote lessons",  "Turn tagged corrections into standing behavioral rules"),
+        ("multi_user", "Multi-user",       "Per-user ownership/visibility (shared server setups)"),
+        ("drive",      "Google Drive",     "Back up memory.db + exports to Google Drive"),
+        ("crons",      "Cron jobs",        "Schedule embedding, pruning, digest, and lesson promotion"),
+    ]
+    # Default: first three on, rest off
+    selected = checklist("Select features to install", items, defaults=[0, 1, 2])
+
+    if "mem_cli" in selected:
+        nl(); hdr("mem CLI")
+        install_mem_cli(docker_port)
+
+    if "digest" in selected:
+        nl(); hdr("Context Digest")
+        install_context_digest()
+
+    if "promote" in selected:
+        nl(); hdr("Promote Lessons")
+        install_promote_lessons()
+
+    if "multi_user" in selected:
+        nl(); hdr("Multi-User Isolation")
+        setup_multi_user()
+
+    if "drive" in selected:
+        nl(); hdr("Google Drive Backup")
+        setup_drive()
+
+    if "crons" in selected:
+        nl(); hdr("Cron Jobs")
+        workspace = prompt_text("Workspace path for cron jobs", str(Path.cwd()))
+
+        cron_items = [
+            ("digest",  "Context digest",     "Refresh CLAUDE.md/MEMORY.md digest every 3h"),
+            ("embed",   "Memory extraction",  "Embed new cells (30min) + consolidate scenes (daily 2am)"),
+            ("prune",   "Memory decay",       "Fade old low-access cells (daily 3am)"),
+            ("promote", "Promote lessons",    "Synthesize correction rules (Sunday 3am, needs API token)"),
+        ]
+        cron_defaults = [i for i, (k, _, _) in enumerate(cron_items)
+                         if k in ("digest", "embed", "prune")]
+        cron_selected = checklist("Which cron jobs to install?", cron_items, cron_defaults)
+
+        api_token = ""
+        if "promote" in cron_selected:
+            api_token = prompt_text(
+                "API token for rule synthesis (Anthropic key or OpenClaw gateway token)",
+                os.environ.get("ANTHROPIC_API_KEY", "")
+            )
+
+        setup_crons(cron_selected, workspace, docker_port, api_token)
+
+
+# ── Summary ────────────────────────────────────────────────────────────────────
+
+def print_summary(mode: str, port: int | None) -> None:
+    hdr("Setup Complete")
+    nl()
+
+    if mode == "docker":
+        ok(f"MCP server: http://localhost:{port}/mcp")
+        nl()
+        print(f"  {BOLD}Quick start:{NC}")
+        mem_pfx = f"MEM_MCP_URL=http://localhost:{port} " if port != 8765 else ""
+        print(f"    {mem_pfx}mem stats")
+        print(f"    {mem_pfx}mem store myproject fact 0.8 'My first memory'")
+        print(f"    {mem_pfx}mem search 'first memory'")
+        nl()
+        print(f"  {BOLD}Container management:{NC}")
+        print(f"    docker compose logs -f oc-memory")
+        print(f"    docker compose restart oc-memory")
+        print(f"    docker compose down oc-memory")
+    else:
+        ok("oc-memory installed (local Python mode)")
+        nl()
+        print(f"  {BOLD}Quick start:{NC}")
+        print(f"    MEM_LOCAL=1 mem stats")
+        print(f"    MEM_LOCAL=1 mem store myproject fact 0.8 'My first memory'")
+        print(f"    MEM_LOCAL=1 mem search 'first memory'")
+        nl()
+        print(f"  {BOLD}Or use the oc-memory CLI directly:{NC}")
+        print("    oc-memory store '{\"scene\":\"myproject\",\"cell_type\":\"fact\",\"salience\":0.8,\"content\":\"My first memory\"}'")
+        print("    oc-memory search 'first memory'")
+        print("    oc-memory stats")
+        nl()
+        print(f"  {BOLD}Start MCP server manually:{NC}")
+        print("    oc-memory-mcp       # stdio (for MCP client configs)")
+
+    nl()
+    print(f"  {BOLD}Useful commands:{NC}")
+    print("    oc-memory mcp-setup                  # reprint MCP config snippets")
+    print("    oc-memory config --client claude      # JSON config for ~/.claude.json")
+    print("    oc-memory config --client openclaw    # JSON config for openclaw.json")
+    nl()
+
+
+# ── Main ───────────────────────────────────────────────────────────────────────
+
+def main() -> None:
+    print_header()
+
+    # ── Mode selection ────────────────────────────────────────────────────────
+    if INSTALL_MODE == "docker":
+        mode_idx = 0
+    elif INSTALL_MODE == "local":
+        mode_idx = 1
+    else:
+        mode_idx = menu(
+            "How do you want to run oc-memory?",
+            [
+                ("Docker",        "Persistent MCP server in a container — shared across all tools"),
+                ("Local Python",  "Install in your Python environment — single-user, no container"),
+            ],
+            default=0,
+        )
+
+    docker_port: int | None = None
+
+    if mode_idx == 0:
+        # ── Docker path ───────────────────────────────────────────────────────
+        docker_port = do_docker()
+        mcp_entry = _http_entry(docker_port)
+        nl()
+        ok(f"Transport: Streamable HTTP  →  http://localhost:{docker_port}/mcp")
+    else:
+        # ── Local Python path ─────────────────────────────────────────────────
+        do_local()
+        mcp_entry = _stdio_entry()
+        nl()
+        ok("Transport: stdio (direct process, no server port needed)")
+
+    # ── Client config ─────────────────────────────────────────────────────────
+    do_client_config(mcp_entry)
+
+    # ── Optional features ─────────────────────────────────────────────────────
+    do_optional_features(docker_port)
+
+    # ── Summary ───────────────────────────────────────────────────────────────
+    mode_label = "docker" if mode_idx == 0 else "local"
+    print_summary(mode_label, docker_port)
+
+
+if __name__ == "__main__":
+    main()

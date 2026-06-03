@@ -2,19 +2,26 @@
 """
 MCP (Model Context Protocol) server for oc-memory.
 
-Exposes memory operations as tools over stdio using JSON-RPC.
-Supports the official MCP SDK if available, falls back to raw JSON-RPC.
+Exposes memory operations as tools via stdio (local) or HTTP (Docker/k8s).
 
 Usage:
-    python -m oc_memory.mcp_server           # stdio mode (default)
-    python -m oc_memory.mcp_server --http    # HTTP/SSE mode
+    oc-memory-mcp                            # stdio mode (local MCP clients)
+    python -m oc_memory.mcp_server --http    # Streamable HTTP + legacy SSE
     MCP_TRANSPORT=http python -m oc_memory.mcp_server
 
+Endpoints (HTTP mode):
+    POST http://host:8765/mcp    — Streamable HTTP (modern MCP, recommended)
+    GET  http://host:8765/sse    — Legacy SSE (deprecated, for old clients)
+    GET  http://host:8765/health — Health check
+
+MCP client config (HTTP transport, Claude Code / Cursor):
+    { "type": "http", "url": "http://localhost:8765/mcp" }
+
 Environment variables:
-    MCP_TRANSPORT=http     Enable HTTP/SSE transport
-    MCP_PORT=8765          Port for HTTP/SSE transport (default: 8765)
-    OC_MEMORY_DB       Path to SQLite database
-    OC_MEMORY_EXPORT   Export directory
+    MCP_TRANSPORT=http     Enable HTTP transport
+    MCP_PORT=8765          Port for HTTP transport (default: 8765)
+    OC_MEMORY_DB           Path to SQLite database
+    OC_MEMORY_EXPORT       Export directory
     OLLAMA_URL             Ollama server URL for embeddings
 """
 

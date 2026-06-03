@@ -1,0 +1,37 @@
+FROM python:3.11-slim
+
+# Minimal toolchain a real user would likely have
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git curl cron ca-certificates && \
+    update-ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /oc-memory
+COPY . .
+
+# Run the TUI installer in non-interactive local mode.
+# INSTALL_MODE=local  — skip Docker path (no Docker daemon inside this build container)
+# NONINTERACTIVE=1    — accept all defaults (y to optional features)
+# OC_MEMORY_SSL_NO_VERIFY=1 — bypass corporate SSL inspection on ONNX download
+RUN INSTALL_MODE=local NONINTERACTIVE=1 OC_MEMORY_SSL_NO_VERIFY=1 python3 install.py
+
+# Make ~/bin available (installer puts mem there)
+ENV PATH="/root/bin:$PATH"
+
+# Smoke-test: verify core tools and database work
+RUN oc-memory stats && \
+    oc-memory store '{"scene":"test","cell_type":"fact","salience":0.9,"content":"installer smoke test"}' && \
+    oc-memory search "installer smoke" && \
+    MEM_LOCAL=1 mem stats && \
+    MEM_LOCAL=1 mem store test fact 0.9 "mem CLI smoke test" && \
+    echo "All smoke tests passed"
+
+# Verify MCP server entry point
+RUN oc-memory-mcp --help 2>&1 | head -3 || true
+
+# Verify config output for all platforms and transports
+RUN oc-memory config --client claude && \
+    oc-memory config --client cursor && \
+    oc-memory config --client openclaw && \
+    oc-memory config --client claude --url http://localhost:8765/mcp && \
+    oc-memory config --client openclaw --url http://localhost:8765/mcp

@@ -19,14 +19,23 @@ oc-memory runs alongside OpenClaw's existing markdown memory files. It doesn't r
 On your OpenClaw host:
 
 ```bash
-# Clone the repo
 cd ~/repos
 git clone https://github.com/sam-ueckert/oc-memory.git
 cd oc-memory
+bash setup.sh
+```
 
-# Install with pip (or uv)
-pip install -e .
-# or: uv sync && uv pip install -e .
+`setup.sh` is interactive. If it finds `openclaw.json` (checked at `~/.openclaw/openclaw.json` or `$OC_MEMORY_OC_CONFIG`), it offers to patch it automatically with the MCP server entry.
+
+**Non-interactive install** (accepts all defaults):
+```bash
+NONINTERACTIVE=1 bash setup.sh
+```
+
+**Corporate network** (SSL inspection proxy):
+```bash
+OC_MEMORY_SSL_NO_VERIFY=1 bash setup.sh
+# or: REQUESTS_CA_BUNDLE=/path/to/corp-ca.crt bash setup.sh
 ```
 
 Verify:

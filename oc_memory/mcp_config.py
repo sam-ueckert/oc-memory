@@ -19,10 +19,25 @@ def _get_python() -> str:
 
 
 def _get_oc_memory_cmd() -> list[str]:
-    """Return the command to run the MCP server."""
-    venv_bin = Path(__file__).parent.parent / ".venv" / "bin" / "oc-memory"
+    """Return the command to run the MCP server.
+
+    Priority:
+    1. oc-memory-mcp entry point (installed by pip/uv into the active env or PATH)
+    2. .venv/bin/oc-memory-mcp (local editable install with a venv)
+    3. python -m oc_memory.mcp_server (last resort)
+    """
+    import shutil
+
+    # Check PATH for the pip-installed entry point
+    if shutil.which("oc-memory-mcp"):
+        return ["oc-memory-mcp"]
+
+    # Check for a local .venv entry point alongside pyproject.toml
+    venv_bin = Path(__file__).parent.parent / ".venv" / "bin" / "oc-memory-mcp"
     if venv_bin.exists():
-        return [str(venv_bin), "mcp-serve"]
+        return [str(venv_bin)]
+
+    # Fall back to running via Python module
     return [_get_python(), "-m", "oc_memory.mcp_server"]
 
 
@@ -88,6 +103,48 @@ def openclaw_config() -> str:
     return json.dumps(config, indent=2)
 
 
+def claude_code_http_config(url: str = "http://localhost:8765/mcp") -> str:
+    """Generate Claude Code MCP config for Streamable HTTP transport."""
+    config = {
+        "mcpServers": {
+            "oc-memory": {
+                "type": "http",
+                "url": url,
+            }
+        }
+    }
+    return json.dumps(config, indent=2)
+
+
+def cursor_http_config(url: str = "http://localhost:8765/mcp") -> str:
+    """Generate Cursor MCP config for Streamable HTTP transport."""
+    config = {
+        "mcpServers": {
+            "oc-memory": {
+                "type": "http",
+                "url": url,
+            }
+        }
+    }
+    return json.dumps(config, indent=2)
+
+
+def openclaw_http_config(url: str = "http://localhost:8765/mcp") -> str:
+    """Generate OpenClaw MCP config for HTTP transport."""
+    config = {
+        "mcp": {
+            "servers": [
+                {
+                    "name": "oc-memory",
+                    "transport": "http",
+                    "url": url,
+                }
+            ]
+        }
+    }
+    return json.dumps(config, indent=2)
+
+
 def print_setup_instructions():
     """Print setup instructions for all supported MCP clients."""
     print("=" * 70)
@@ -96,31 +153,56 @@ def print_setup_instructions():
     print()
 
     print("─" * 70)
-    print("1. CLAUDE CODE (~/.claude.json or .claude/settings.json)")
+    print("TRANSPORT OPTIONS")
     print("─" * 70)
-    print("Add this to the top-level mcpServers section:")
     print()
-    config = json.loads(claude_code_config())
-    snippet = json.dumps(config["mcpServers"]["oc-memory"], indent=2)
-    # Indent for embedding
-    for line in snippet.splitlines():
-        print("  " + line)
+    print("  A) Docker / remote server  →  Streamable HTTP (recommended)")
+    print("     Endpoint: http://localhost:8765/mcp   (POST, modern MCP spec)")
     print()
-    print('  Example: Add "oc-memory": { ... } inside "mcpServers": { }')
+    print("  B) Local Python process    →  stdio (single-user, no container)")
     print()
 
     print("─" * 70)
-    print("2. CURSOR (.cursor/mcp.json in project root or ~/.cursor/mcp.json)")
+    print("1. CLAUDE CODE  (~/.claude.json or .claude/settings.json)")
     print("─" * 70)
-    print("Create or update the file with:")
+    print()
+    print("  A) Docker / HTTP transport (recommended):")
+    print()
+    config_http = json.loads(claude_code_http_config())
+    snippet = json.dumps(config_http["mcpServers"]["oc-memory"], indent=2)
+    for line in snippet.splitlines():
+        print("    " + line)
+    print()
+    print("  B) Local stdio transport:")
+    print()
+    config = json.loads(claude_code_config())
+    snippet = json.dumps(config["mcpServers"]["oc-memory"], indent=2)
+    for line in snippet.splitlines():
+        print("    " + line)
+    print()
+
+    print("─" * 70)
+    print("2. CURSOR  (.cursor/mcp.json or ~/.cursor/mcp.json)")
+    print("─" * 70)
+    print()
+    print("  A) Docker / HTTP transport:")
+    print()
+    print(cursor_http_config())
+    print()
+    print("  B) Local stdio transport:")
     print()
     print(cursor_config())
     print()
 
     print("─" * 70)
-    print("3. OPENCLAW (openclaw.json)")
+    print("3. OPENCLAW  (openclaw.json)")
     print("─" * 70)
-    print("Add under the 'mcp' key:")
+    print()
+    print("  A) Docker / HTTP transport:")
+    print()
+    print(openclaw_http_config())
+    print()
+    print("  B) Local stdio transport:")
     print()
     print(openclaw_config())
     print()

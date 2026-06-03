@@ -31,6 +31,19 @@ USE_LOCAL="${MEM_LOCAL:-0}"
 
 if [[ "$USE_LOCAL" == "1" ]] || [[ "${1:-}" == "--local" ]]; then
     [[ "${1:-}" == "--local" ]] && shift
+
+    # store / quick-store: convert positional <scene> <type> <sal> <content> → JSON
+    if [[ "${1:-}" == "store" || "${1:-}" == "quick-store" ]]; then
+        shift
+        SCENE="$1"; TYPE="$2"; SAL="$3"; shift 3; CONTENT="$*"
+        JSON=$(python3 -c "
+import json, sys
+scene, cell_type, salience, content = sys.argv[1], sys.argv[2], float(sys.argv[3]), sys.argv[4]
+print(json.dumps({'scene': scene, 'cell_type': cell_type, 'salience': salience, 'content': content}))
+" "$SCENE" "$TYPE" "$SAL" "$CONTENT")
+        exec python3 -m oc_memory.cli store "$JSON"
+    fi
+
     exec python3 -m oc_memory.cli "$@"
 fi
 
