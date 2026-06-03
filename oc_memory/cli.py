@@ -175,9 +175,10 @@ def main():
     elif cmd == "scene":
         name = " ".join(sys.argv[2:])
         info, cells = db.get_scene(name)
-        if info:
+        if cells:
             print(f"Scene: {name}")
-            print(f"Summary: {info['summary']}")
+            if info and info.get("summary"):
+                print(f"Summary: {info['summary']}")
             for c in cells:
                 print(f"  [{c['id']}] [{c['cell_type']}] sal:{c['salience']:.2f} — {c['content'][:120]}")
         else:

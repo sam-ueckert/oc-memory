@@ -58,7 +58,7 @@ fi
 
 # --- Set default model per provider ---
 if [[ "$API_PROVIDER" == "anthropic" ]]; then
-  API_MODEL="${API_MODEL:-claude-sonnet-4-20250514}"
+  API_MODEL="${API_MODEL:-claude-sonnet-4-6}"
 else
   API_MODEL="${API_MODEL:-openclaw}"
 fi
@@ -93,8 +93,10 @@ log "Provider: $API_PROVIDER | Model: $API_MODEL | Target: $TARGET_FILE"
 # --- Collect memory cells ---
 log "Querying mem for corrections and lessons..."
 
-CORRECTIONS=$("$MEM_CMD" search-tag correction 2>/dev/null | head -40 || true)
-LESSONS=$("$MEM_CMD" scene lessons 2>/dev/null | grep -E "sal:(0\.[89]|1\.0)" | head -30 || true)
+# Filter to lines that are actual cell output (start with [id]) to avoid
+# treating "No cells tagged X" / "Scene not found" messages as cells.
+CORRECTIONS=$("$MEM_CMD" search-tag correction 2>/dev/null | grep -E "^\[" | head -40 || true)
+LESSONS=$(    "$MEM_CMD" scene lessons           2>/dev/null | grep -E "sal:(0\.[89]|1\.0)" | head -30 || true)
 
 COMBINED=$(printf '%s\n%s' "$CORRECTIONS" "$LESSONS" | grep -v '^[[:space:]]*$' || true)
 

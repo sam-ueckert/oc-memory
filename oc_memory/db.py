@@ -783,10 +783,21 @@ class MemoryDB:
         return (dict(row) if row else None), [dict(c) for c in cells]
 
     def list_scenes(self) -> list[dict]:
+        # Join mem_cells with mem_scenes so scenes appear as soon as cells are stored,
+        # even before consolidate() has been run to generate a summary.
         return [
             dict(r)
             for r in self.db.execute(
-                "SELECT scene, summary, cell_count, updated_at FROM mem_scenes ORDER BY updated_at DESC"
+                """
+                SELECT c.scene,
+                       COALESCE(s.summary, '') AS summary,
+                       COUNT(c.id)             AS cell_count,
+                       MAX(c.updated_at)       AS updated_at
+                FROM mem_cells c
+                LEFT JOIN mem_scenes s ON c.scene = s.scene
+                GROUP BY c.scene
+                ORDER BY MAX(c.updated_at) DESC
+                """
             ).fetchall()
         ]
 

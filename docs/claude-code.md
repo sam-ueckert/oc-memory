@@ -59,7 +59,7 @@ The digest block uses `ARCHY_DIGEST_*` markers; the learned-rules block uses `LE
 
 ### How it works
 
-`gen-context-digest.sh` queries oc-memory for high-salience cells grouped by scene, then rewrites the `<!-- OC_MEMORY_DIGEST_START/END -->` block in your `CLAUDE.md`.
+`gen-context-digest.sh` queries oc-memory for high-salience cells grouped by scene, then rewrites the `<!-- ARCHY_DIGEST_START/END -->` block in your `CLAUDE.md`.
 
 Because Claude Code injects `CLAUDE.md` into every session, Claude sees the latest memory digest **before it makes a single tool call** — no extra MCP request needed.
 
@@ -162,10 +162,7 @@ If multiple Claude Code instances share one oc-memory server (e.g., on a shared 
 export OC_MEMORY_ADMIN_USER="your-user-id"
 ```
 
-Store cells with ownership:
-```bash
-mem quick-store projects fact 0.8 "Shared project fact" --visibility shared --owner-id your-user-id
-```
+Store cells with ownership via MCP tool call:
 
 Or via MCP tool call from Claude Code:
 ```json
