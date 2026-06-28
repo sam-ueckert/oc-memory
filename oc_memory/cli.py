@@ -7,6 +7,8 @@ Usage:
   oc-memory store-stdin               Store cells from stdin (JSON)
   oc-memory extract <text>            Extract cells from text using local LLM
   oc-memory extract-file <path>       Extract cells from a file
+  oc-memory extract-hermes [--hermes-db PATH] [--since-hours N] [--dry-run]
+                        Extract memories from Hermes session transcripts
   oc-memory search <query>            Search memories (vector + FTS fallback)
   oc-memory scenes                    List all scenes
   oc-memory scene <name>              Get scene details
@@ -400,6 +402,10 @@ def main():
                 print(f"[{c['id']}] {c['content']}")
         else:
             print(f"No digest found for {target_date}. Run: oc-memory summarize-day {target_date}")
+
+    elif cmd == "extract-hermes":
+        from .hermes_extractor import cmd_extract_hermes
+        cmd_extract_hermes(sys.argv[2:])
 
     elif cmd == "mcp-serve":
         from .mcp_server import main as mcp_main
