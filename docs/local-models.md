@@ -133,13 +133,58 @@ curl http://localhost:11434/api/embed \
 | ONNX (default) | bge-small-en-v1.5 | **384** | ~512MB | none |
 | Ollama (opt-in) | nomic-embed-text | 768 | ~4GB | set `OLLAMA_URL` |
 
+### Nous Hermes / Hermes 3 (extraction — higher JSON fidelity)
+
+Nous Hermes and Hermes 3 models use the **ChatML** format (`<|im_start|>system … <|im_end|>`) and
+are trained for strong instruction-following and structured JSON output. oc-memory auto-detects
+these models by name prefix and switches to the `/api/chat` path with role-separated prompts
+and `format=json` enforcement — no manual configuration needed.
+
+```bash
+ollama pull nous-hermes2:10.7b-solar-q4_K_M   # 10.7B, good balance
+ollama pull hermes3                             # Hermes 3 (Llama 3.1 base)
+ollama pull adrienbrault/nous-hermes2pro-llama3-8b:f16  # Hermes 2 Pro
+```
+
+Use it:
+```bash
+export OLLAMA_URL=http://localhost:11434
+export OC_MEMORY_EXTRACTOR_MODEL=nous-hermes2:10.7b-solar-q4_K_M
+oc-memory extract "text to parse into cells"
+```
+
+What changes automatically for Hermes models:
+- **API path**: `/api/chat` instead of `/api/generate` — matches ChatML training format
+- **Role split**: extraction instructions in the `system` role, text in the `user` role
+- **JSON mode**: `format=json` enforced — prevents natural-language preamble in the response
+- **Response parsing**: handles both bare arrays and Hermes's common `{"items": [...]}` wrapping
+
+Force chat-API mode for any model (e.g. Mistral):
+```bash
+export OC_MEMORY_EXTRACTOR_API=chat
+export OC_MEMORY_EXTRACTOR_JSON=1   # only for models that support format=json
+```
+
 ### Alternative Extraction Models
 
 You can swap the extraction model via environment variables:
 
-| Variable | Default | Alternatives |
-|----------|---------|-------------|
-| Extraction model | `llama3.2:3b` | `llama3.2:1b` (faster, less accurate), `mistral` (7B, better quality) |
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `OC_MEMORY_EXTRACTOR_MODEL` | `llama3.2:3b` | Model to use for extraction |
+| `OC_MEMORY_EXTRACTOR_API` | auto | `chat` (ChatML/Hermes) or `generate` (flat prompt) |
+| `OC_MEMORY_EXTRACTOR_JSON` | auto | `1` to enforce JSON format mode |
+
+Model selection guide:
+
+| Model | RAM | Quality | API path | Notes |
+|-------|-----|---------|----------|-------|
+| `llama3.2:1b` | ~1GB | Low | generate | Fast on CPU |
+| `llama3.2:3b` | ~2GB | Medium | generate | Default |
+| `mistral` | ~4GB | High | generate | Good alternative |
+| `nous-hermes2:10.7b-solar-q4_K_M` | ~7GB | High | **chat** | Best JSON fidelity |
+| `hermes3` | ~5GB | High | **chat** | Llama 3.1 base |
+| `adrienbrault/nous-hermes2pro-llama3-8b:f16` | ~8GB | Highest | **chat** | Tool use support |
 
 ## Running Ollama as a Service
 

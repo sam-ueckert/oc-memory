@@ -52,8 +52,22 @@ def get_embedder():
 
 
 def get_extractor():
-    from .extractor import MemoryExtractor
-    return MemoryExtractor(OLLAMA_URL)
+    from .extractor import DEFAULT_MODEL, DEFAULT_OLLAMA_URL, MemoryExtractor
+
+    url = OLLAMA_URL or DEFAULT_OLLAMA_URL
+    model = os.environ.get("OC_MEMORY_EXTRACTOR_MODEL", DEFAULT_MODEL)
+
+    # OC_MEMORY_EXTRACTOR_API=chat  → force chat path (Hermes / ChatML models)
+    # OC_MEMORY_EXTRACTOR_API=generate → force generate path
+    # unset → auto-detect from model name
+    api_env = os.environ.get("OC_MEMORY_EXTRACTOR_API", "").lower()
+    use_chat_api = True if api_env == "chat" else (False if api_env == "generate" else None)
+
+    # OC_MEMORY_EXTRACTOR_JSON=1 → force JSON format mode (Hermes 2 Pro / Hermes 3)
+    json_env = os.environ.get("OC_MEMORY_EXTRACTOR_JSON", "").lower()
+    json_format = True if json_env in ("1", "true") else (False if json_env in ("0", "false") else None)
+
+    return MemoryExtractor(url, model, use_chat_api=use_chat_api, json_format=json_format)
 
 
 def get_backup(db):
