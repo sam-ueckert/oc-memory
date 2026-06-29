@@ -7,8 +7,10 @@ Usage:
   oc-memory store-stdin               Store cells from stdin (JSON)
   oc-memory extract <text>            Extract cells from text using local LLM
   oc-memory extract-file <path>       Extract cells from a file
-  oc-memory extract-hermes [--hermes-db PATH] [--since-hours N] [--dry-run]
-                        Extract memories from Hermes session transcripts
+  oc-memory extract-hermes [--sink mcp|both|local] [--mcp-url URL] [--source SRC] [--dry-run]
+                        Extract Hermes sessions (via `hermes sessions export`) and push to archy MCP
+  oc-memory migrate-to-mcp [--db PATH] [--mcp-url URL] [--dry-run]
+                        Push all cells from a local oc-memory DB to a remote MCP server
   oc-memory search <query>            Search memories (vector + FTS fallback)
   oc-memory scenes                    List all scenes
   oc-memory scene <name>              Get scene details
@@ -54,22 +56,8 @@ def get_embedder():
 
 
 def get_extractor():
-    from .extractor import DEFAULT_MODEL, DEFAULT_OLLAMA_URL, MemoryExtractor
-
-    url = OLLAMA_URL or DEFAULT_OLLAMA_URL
-    model = os.environ.get("OC_MEMORY_EXTRACTOR_MODEL", DEFAULT_MODEL)
-
-    # OC_MEMORY_EXTRACTOR_API=chat  → force chat path (Hermes / ChatML models)
-    # OC_MEMORY_EXTRACTOR_API=generate → force generate path
-    # unset → auto-detect from model name
-    api_env = os.environ.get("OC_MEMORY_EXTRACTOR_API", "").lower()
-    use_chat_api = True if api_env == "chat" else (False if api_env == "generate" else None)
-
-    # OC_MEMORY_EXTRACTOR_JSON=1 → force JSON format mode (Hermes 2 Pro / Hermes 3)
-    json_env = os.environ.get("OC_MEMORY_EXTRACTOR_JSON", "").lower()
-    json_format = True if json_env in ("1", "true") else (False if json_env in ("0", "false") else None)
-
-    return MemoryExtractor(url, model, use_chat_api=use_chat_api, json_format=json_format)
+    from .extractor import MemoryExtractor
+    return MemoryExtractor(OLLAMA_URL)
 
 
 def get_backup(db):
@@ -406,6 +394,10 @@ def main():
     elif cmd == "extract-hermes":
         from .hermes_extractor import cmd_extract_hermes
         cmd_extract_hermes(sys.argv[2:])
+
+    elif cmd == "migrate-to-mcp":
+        from .hermes_extractor import cmd_migrate_to_mcp
+        sys.exit(cmd_migrate_to_mcp(sys.argv[2:]) or 0)
 
     elif cmd == "mcp-serve":
         from .mcp_server import main as mcp_main

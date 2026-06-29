@@ -557,6 +557,163 @@ def setup_crons(features: list[str], workspace: str, docker_port: int | None, ap
         print(f"    {DIM}(none){NC}")
 
 
+# ── Hermes session extractor ─────────────────────────────────────────────────
+
+def _default_mcp_url(docker_port: int | None) -> str:
+    if docker_port:
+        return f"http://localhost:{docker_port}/mcp"
+    return os.environ.get("OC_MEMORY_MCP_URL", "http://localhost:8765/mcp")
+
+
+def _hermes_env_path() -> Path:
+    return Path(os.environ.get("OC_MEMORY_HOME", Path.home() / ".oc-memory")) / "hermes.env"
+
+
+def _read_hermes_env() -> dict:
+    """Parse an existing hermes.env into a dict (empty if absent)."""
+    path = _hermes_env_path()
+    if not path.exists():
+        return {}
+    out: dict[str, str] = {}
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, _, v = line.partition("=")
+        out[k.strip()] = v.strip()
+    return out
+
+
+def setup_hermes_extractor(docker_port: int | None) -> None:
+    """Configure the Hermes → archy session memory extractor + sink mode.
+
+    Reconfigure-safe: when an existing hermes.env is present, its values are
+    used as defaults so a second run edits the current setup instead of
+    resetting it.
+
+    When MCP-only is chosen and a local memory DB still holds cells, offer to
+    migrate them to the MCP server first. Migration is a non-destructive copy
+    (local DB is only read), and we only commit to MCP-only once every cell has
+    landed on the server — otherwise we keep the local copy as a safety net.
+    """
+    info("Extracts Hermes agent sessions and pushes distilled memories to archy.")
+
+    existing = _read_hermes_env()
+    if existing:
+        nl()
+        info("Existing extractor config found — reconfiguring (current values are the defaults).")
+    nl()
+
+    prev_sink = existing.get("OC_MEMORY_HERMES_SINK", "mcp")
+    sink_idx = menu(
+        "Where should extracted memories be stored?",
+        [
+            ("MCP only",      "Push only to the remote archy MCP server (central source of truth)"),
+            ("MCP + local",   "Push to MCP and keep a local SQLite copy as cache/fallback"),
+        ],
+        default=0 if prev_sink == "mcp" else 1,
+    )
+    sink = "mcp" if sink_idx == 0 else "both"
+
+    mcp_url = prompt_text("archy MCP server URL",
+                          existing.get("OC_MEMORY_MCP_URL") or _default_mcp_url(docker_port))
+    source  = prompt_text("Filter Hermes sessions by source (blank = all)",
+                          existing.get("OC_MEMORY_HERMES_SOURCE", ""))
+
+    migrated_marker = existing.get("OC_MEMORY_MCP_MIGRATED", "")
+
+    # Detect an existing local memory DB.
+    local_db = Path(os.environ.get("OC_MEMORY_DB", Path.home() / ".oc-memory" / "memory.db"))
+    local_count = _count_local_cells(local_db)
+
+    if sink == "mcp" and local_count > 0:
+        nl()
+        warn(f"Found an existing local memory DB with {local_count} cells: {local_db}")
+        info("MCP-only mode won't read this local DB at extraction time.")
+        info("(Migration copies cells to the server; the local DB is left untouched.)")
+
+        already = migrated_marker == mcp_url
+        if already:
+            info(f"These memories were already migrated to {mcp_url} on a previous run.")
+            prompt_msg = "Migrate again? (may create duplicates on the server)"
+        else:
+            prompt_msg = f"Migrate these {local_count} memories to the MCP server now?"
+
+        if ask(prompt_msg, default=not already):
+            success = _run_migration(str(local_db), mcp_url)
+            if success:
+                migrated_marker = mcp_url
+            else:
+                nl()
+                warn("Migration did not fully succeed — your local memories are still intact.")
+                info("Switching to MCP-only now would orphan the un-migrated cells.")
+                if ask("Keep a local copy (use MCP + local) until migration succeeds?", default=True):
+                    sink = "both"
+                    ok("Sink set to MCP + local — local data is preserved as a safety net.")
+                else:
+                    warn("Proceeding with MCP-only. Re-run migration manually before relying on it:")
+                    info(f"  oc-memory migrate-to-mcp --db {local_db} --mcp-url {mcp_url}")
+        elif not already:
+            nl()
+            info("Skipping migration. Keeping MCP + local so local memories aren't orphaned.")
+            sink = "both"
+    elif sink == "mcp":
+        ok("No existing local memory DB found — nothing to migrate.")
+
+    _write_hermes_env(sink, mcp_url, source, migrated=migrated_marker)
+
+
+def _count_local_cells(db_path: Path) -> int:
+    if not db_path.exists():
+        return 0
+    try:
+        import sqlite3
+        conn = sqlite3.connect(str(db_path))
+        try:
+            return conn.execute("SELECT COUNT(*) FROM mem_cells").fetchone()[0]
+        finally:
+            conn.close()
+    except Exception:
+        return 0
+
+
+def _run_migration(db_path: str, mcp_url: str) -> bool:
+    """Run the migrate-to-mcp command. Returns True only on full success."""
+    info("Migrating local memories to the MCP server…")
+    cmd = [sys.executable, "-m", "oc_memory.cli", "migrate-to-mcp",
+           "--db", db_path, "--mcp-url", mcp_url]
+    r = subprocess.run(cmd)
+    if r.returncode == 0:
+        ok("Migration complete — all local cells are now on the MCP server.")
+        return True
+    warn("Migration incomplete (server unreachable or some cells rejected).")
+    info("Run manually once the server is reachable:")
+    info(f"  oc-memory migrate-to-mcp --db {db_path} --mcp-url {mcp_url}")
+    return False
+
+
+def _write_hermes_env(sink: str, mcp_url: str, source: str, migrated: str = "") -> None:
+    """Persist extractor defaults to ~/.oc-memory/hermes.env for cron/manual use."""
+    env_path = _hermes_env_path()
+    env_path.parent.mkdir(parents=True, exist_ok=True)
+    lines = [
+        f"OC_MEMORY_HERMES_SINK={sink}",
+        f"OC_MEMORY_MCP_URL={mcp_url}",
+    ]
+    if source:
+        lines.append(f"OC_MEMORY_HERMES_SOURCE={source}")
+    if migrated:
+        # Records the URL local cells were already migrated to, so a re-run
+        # won't blindly re-push and create duplicates.
+        lines.append(f"OC_MEMORY_MCP_MIGRATED={migrated}")
+    env_path.write_text("\n".join(lines) + "\n")
+    ok(f"Wrote extractor config: {env_path}")
+    nl()
+    src_arg = f" --source {source}" if source else ""
+    info("Run the extractor (where Hermes lives):")
+    info(f"  oc-memory extract-hermes --sink {sink} --mcp-url {mcp_url}{src_arg}")
+
+
 # ── Optional features ──────────────────────────────────────────────────────────
 
 def do_optional_features(docker_port: int | None) -> None:
@@ -566,6 +723,7 @@ def do_optional_features(docker_port: int | None) -> None:
         ("mem_cli",    "mem CLI",          "Quick memory commands in your terminal"),
         ("digest",     "Context digest",   "Prime agent context with top memories at session start"),
         ("promote",    "Promote lessons",  "Turn tagged corrections into standing behavioral rules"),
+        ("hermes",     "Hermes extractor", "Extract Hermes agent sessions → push memories to archy (MCP)"),
         ("multi_user", "Multi-user",       "Per-user ownership/visibility (shared server setups)"),
         ("drive",      "Google Drive",     "Back up memory.db + exports to Google Drive"),
         ("crons",      "Cron jobs",        "Schedule embedding, pruning, digest, and lesson promotion"),
@@ -584,6 +742,10 @@ def do_optional_features(docker_port: int | None) -> None:
     if "promote" in selected:
         nl(); hdr("Promote Lessons")
         install_promote_lessons()
+
+    if "hermes" in selected:
+        nl(); hdr("Hermes Session Extractor")
+        setup_hermes_extractor(docker_port)
 
     if "multi_user" in selected:
         nl(); hdr("Multi-User Isolation")
