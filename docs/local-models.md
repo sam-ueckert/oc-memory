@@ -204,4 +204,4 @@ curl http://localhost:11434/api/tags  # should return model list
 
 **Remote Ollama unreachable** — Check firewall rules. Ollama binds to `127.0.0.1` by default. Set `OLLAMA_HOST=0.0.0.0` to listen on all interfaces, or use an SSH tunnel.
 
-**Switched backends, search broken** — If you switch from ONNX (384-dim) to Ollama (768-dim) or vice versa, existing vectors are incompatible. Re-embed all cells: `oc-memory embed --force`.
+**Switched backends, search broken** — If you switch from ONNX (384-dim) to Ollama (768-dim) or vice versa, existing vectors are incompatible. Clear the stored embeddings (so every cell is treated as missing one), then re-embed: `oc-memory embed` (the `embed` command only processes cells that have no embedding).

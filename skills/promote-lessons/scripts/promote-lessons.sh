@@ -15,7 +15,7 @@
 #   API_PROVIDER — "openclaw" or "anthropic" (default: auto-detect)
 #   API_URL      — Chat Completions endpoint (openclaw only; default: http://127.0.0.1:18789/v1/chat/completions)
 #   API_TOKEN    — Bearer token (REQUIRED — no default)
-#   API_MODEL    — Model to use (default: openclaw → "openclaw", anthropic → "claude-sonnet-4-20250514")
+#   API_MODEL    — Model to use (default: openclaw → "openclaw", anthropic → "claude-sonnet-4-6")
 #   MAX_RULES    — max rules to keep (default: 30)
 #
 # Auto-detection:

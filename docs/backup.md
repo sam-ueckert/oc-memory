@@ -8,19 +8,19 @@ Full dump of all cells and scenes to a single JSON file.
 
 ```bash
 oc-memory export
-# Creates: ~/.openclaw/workspace/memory-export/memory-export.json
-# Creates: ~/.openclaw/workspace/memory-export/scenes-index.md
-# Creates: ~/.openclaw/workspace/memory-export/scene-<name>.md (per scene)
+# Creates: ~/.oc-memory/export/memory-export.json
+# Creates: ~/.oc-memory/export/scenes-index.md
+# Creates: ~/.oc-memory/export/scene-<name>.md (per scene)
 ```
 
-The export directory is configured via `OC_MEMORY_EXPORT`:
+The export directory defaults to `~/.oc-memory/export` and is configured via `OC_MEMORY_EXPORT`. Point it at a git-tracked directory if you want to commit exports:
 ```bash
-export OC_MEMORY_EXPORT=~/.openclaw/workspace/memory-export
+export OC_MEMORY_EXPORT=~/my-memory-repo/export
 ```
 
 Commit and push after export:
 ```bash
-cd ~/.openclaw/workspace
+cd ~/my-memory-repo
 git add -A && git commit -m "memory export" && git push
 ```
 
@@ -39,15 +39,23 @@ memory-export/
 
 These are designed for human review. You can read them directly to understand what the agent remembers.
 
-## Layer 3: Remote SQLite Copy (optional)
+## Layer 3: Remote SQLite Copy (optional, Python API only)
 
-Copy the raw SQLite database to a backup server:
+Copy the raw SQLite database to a backup server via `scp`. This is **not** wired
+into the `oc-memory backup` CLI (that command only runs the JSON/markdown export);
+use the Python API and pass `remote_backup_host`:
 
-```bash
-OC_MEMORY_BACKUP_HOST=my-server oc-memory backup
+```python
+from oc_memory.backup import BackupManager
+from oc_memory.db import MemoryDB
+
+backup = BackupManager(MemoryDB("~/.oc-memory/memory.db"),
+                       export_dir="~/.oc-memory/export",
+                       remote_backup_host="my-server")
+backup.backup_sqlite()   # scp memory.db → my-server:~/backups/memory.db
 ```
 
-This runs `scp` to copy `memory.db` to `~/backups/memory.db` on the remote host. Requires SSH key access.
+Requires SSH key access. For most setups, prefer the Google Drive backup (Layer 4).
 
 ## Restoring from Backup
 
@@ -55,19 +63,19 @@ This runs `scp` to copy `memory.db` to `~/backups/memory.db` on the remote host.
 
 ```bash
 # Delete or move the current DB
-mv ~/.openclaw/memory.db ~/.openclaw/memory.db.bak
+mv ~/.oc-memory/memory.db ~/.oc-memory/memory.db.bak
 
 # Restore from JSON export
 oc-memory restore path/to/memory-export.json
 ```
 
-Note: Embeddings are not included in JSON exports. Run `oc-memory embed` after restoring to regenerate them (requires Ollama).
+Note: Embeddings are not included in JSON exports. Run `oc-memory embed` after restoring to regenerate them (uses the built-in ONNX embedder, or Ollama if `OLLAMA_URL` is set).
 
 ### From SQLite copy
 
 ```bash
 # Just copy the DB file back
-scp my-server:~/backups/memory.db ~/.openclaw/memory.db
+scp my-server:~/backups/memory.db ~/.oc-memory/memory.db
 ```
 
 This preserves everything including embeddings.
@@ -150,6 +158,6 @@ Add to your agent's heartbeat checklist:
 For automated backup without agent involvement:
 
 ```bash
-# Every 6 hours, export and git push
-0 */6 * * * cd ~/.openclaw/workspace && oc-memory export && git add -A && git commit -m "auto memory backup" && git push 2>/dev/null
+# Every 6 hours, export and git push (set OC_MEMORY_EXPORT to a git-tracked dir)
+0 */6 * * * OC_MEMORY_EXPORT=~/my-memory-repo/export oc-memory export && cd ~/my-memory-repo && git add -A && git commit -m "auto memory backup" && git push 2>/dev/null
 ```

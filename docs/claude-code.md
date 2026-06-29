@@ -82,7 +82,7 @@ Check your `CLAUDE.md` — the digest block should be populated.
 ### Cron (every 3 hours)
 
 ```bash
-0 */3 * * * OC_MEMORY_WORKSPACE=/path/to/workspace bash ~/bin/gen-context-digest.sh
+0 */3 * * * WORKSPACE=/path/to/workspace bash ~/bin/gen-context-digest.sh
 ```
 
 Or let `scripts/install-crons.sh` add it for you.

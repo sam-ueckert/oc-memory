@@ -12,5 +12,5 @@ access to past conversations, decisions, and facts without manual search calls.
 
 ## Requirements
 
-- `oc-memory` CLI must be on PATH (or adjust `MEM_CLI` in handler.ts)
+- `oc-memory` CLI must be on PATH (or set the `OC_MEMORY_CLI` env var)
 - Memory database must exist (run `oc-memory stats` to initialize)

@@ -107,7 +107,7 @@ Agent responds (with memory context)
     ▼
 Later (cron/manual):
     oc-memory embed       → add vector embeddings
-    oc-memory consolidate → extract structured facts
+    oc-memory consolidate → summarize scenes
     oc-memory decay       → prune stale memories
     oc-memory export      → backup to git
 ```

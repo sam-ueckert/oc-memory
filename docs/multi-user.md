@@ -63,7 +63,7 @@ Pass `caller_id` in MCP tool calls to scope results to the caller:
 
 Omit `caller_id` (or leave it empty) for admin-level access — all cells are returned.
 
-Supported in tools: `memory_store`, `memory_search`, `memory_search_tag`, `memory_forget`, `memory_tag`.
+`caller_id` is supported in: `memory_search`, `memory_search_tag`, `memory_forget`, `memory_tag`. (`memory_store` instead takes `owner_id` and `visibility` — see below.)
 
 ## Storing with ownership
 

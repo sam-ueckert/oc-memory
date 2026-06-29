@@ -132,7 +132,7 @@ kubectl logs -n oc-memory -l app=memory-server --tail=20
 
 ---
 
-## Step 6: Connect the `mem` CLI`
+## Step 6: Connect the `mem` CLI
 
 Set `MEM_MCP_URL` to the NodePort endpoint:
 

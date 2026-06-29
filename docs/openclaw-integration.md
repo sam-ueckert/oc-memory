@@ -168,8 +168,9 @@ oc-memory exports to JSON + markdown files that you can commit to git:
 # Export scenes as markdown + full JSON dump
 oc-memory export
 
-# Full backup (includes optional remote SQLite copy)
-OC_MEMORY_BACKUP_HOST=my-backup-server oc-memory backup
+# Export + (optional) Google Drive upload. Remote SQLite scp is Python-API only —
+# see docs/backup.md.
+oc-memory backup --drive
 ```
 
 Add the export directory to your workspace `.gitignore` exceptions or track it directly.

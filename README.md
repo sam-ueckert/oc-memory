@@ -15,6 +15,7 @@ Built on SQLite + FTS5 + ONNX embeddings. Zero external API dependencies.
 - **`mem` CLI** — terminal interface for agents and humans
 - **Context digest** — pre-loads top memories into every agent session
 - **Promote lessons** — turns past corrections into standing behavioral rules
+- **Hermes session extractor** — distills [Hermes agent](https://github.com/NousResearch/hermes-agent) sessions into memory cells and pushes them to a remote archy MCP server (modern Streamable HTTP)
 
 ---
 
@@ -269,6 +270,20 @@ API_TOKEN=<gateway-token> WORKSPACE=$(pwd) bash ~/bin/promote-lessons.sh
 
 See [`skills/promote-lessons/SKILL.md`](skills/promote-lessons/SKILL.md).
 
+### Hermes Session Extractor
+
+Pulls recent [Hermes agent](https://github.com/NousResearch/hermes-agent) sessions (via `hermes sessions export`, with a read-only SQLite fallback), distills them into memory cells with an LLM, and pushes them to an archy store. Runs co-located with Hermes (k3s or native); only the push target — an MCP URL — crosses the network.
+
+```bash
+# Extract last 24h → push to the archy MCP server (modern Streamable HTTP)
+oc-memory extract-hermes --sink mcp --mcp-url http://host:8765/mcp
+
+# Migrate an existing local store to MCP before switching to MCP-only
+oc-memory migrate-to-mcp --db ~/.oc-memory/memory.db --mcp-url http://host:8765/mcp
+```
+
+Sinks: `mcp` (default) · `both` (MCP + local cache) · `local`. See [`docs/hermes-extractor.md`](docs/hermes-extractor.md).
+
 ### OpenClaw Hooks
 
 Automatic recall + capture on every conversation turn via gateway-level hooks. See [`hooks/README.md`](hooks/README.md).
@@ -353,6 +368,12 @@ AI assistant (Claude Code / Cursor / OpenClaw)
 | `INSTALL_MODE` | — | `docker` or `local` to skip mode selection |
 | `MEM_LOCAL` | — | `1` to use local library in `mem` CLI |
 | `MEM_MCP_URL` | `http://localhost:8765` | MCP server URL for `mem` CLI |
+| `OC_MEMORY_MCP_URL` | _(in-cluster archy)_ | Push target for `extract-hermes` / `migrate-to-mcp` |
+| `OC_MEMORY_MCP_TOKEN` | — | Bearer token for the remote MCP server |
+| `OC_MEMORY_HERMES_SINK` | `mcp` | Hermes extractor sink: `mcp` \| `both` \| `local` |
+| `OC_MEMORY_HERMES_DB` | `~/.hermes/state.db` | Hermes SQLite path (read-only fallback) |
+| `OC_MEMORY_API_URL` | `http://localhost:18789/v1` | LLM (OpenAI-compatible) endpoint for extraction |
+| `OC_MEMORY_EXTRACT_MODEL` | `openclaw` | Model used by `extract-hermes` |
 
 ---
 
