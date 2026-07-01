@@ -60,6 +60,25 @@ TYPE_WEIGHTS: dict[str, float] = {
     "exchange": 0.5,
 }
 
+# Salience is nominally 0.1–1.0, but reinforcement (reinforce/access boosts)
+# can push it well above 1.0 (observed 5.0–7.0). Used as a raw additive term or
+# multiplier it dominates cosine similarity (bounded 0–1), so a low-similarity
+# but high-salience cell outranks a highly-relevant one. We instead fold
+# salience into a bounded multiplicative modifier: semantic similarity remains
+# the primary ranking signal and salience only nudges near-ties.
+SALIENCE_STRENGTH: float = 0.15
+
+
+def _salience_factor(salience: float, strength: float = SALIENCE_STRENGTH) -> float:
+    """Bounded modifier in [1-strength, 1+strength].
+
+    salience 0.5 (default) -> 1.0 (neutral); higher promotes, lower demotes.
+    Clamped at 1.0 so reinforced cells (>1) can't dominate — they saturate at
+    the maximum boost rather than overriding relevance.
+    """
+    s = max(0.0, min(float(salience), 1.0))
+    return (1.0 - strength) + (2.0 * strength) * s
+
 
 class MemoryDB:
     def __init__(self, db_path: str | Path):
@@ -389,8 +408,10 @@ class MemoryDB:
             if emb is None:
                 continue
             sim = float(np.dot(query_embedding, emb) / (np.linalg.norm(query_embedding) * np.linalg.norm(emb) + 1e-10))
-            # Blend similarity with salience: 70% semantic, 30% salience
-            score = 0.7 * sim + 0.3 * row["salience"]
+            # Semantic similarity is the primary signal; salience is a bounded
+            # modifier (was 0.7*sim + 0.3*salience, which let unbounded reinforced
+            # salience dominate low-similarity cells).
+            score = max(sim, 0.0) * _salience_factor(row["salience"])
             scored.append((score, sim, dict(row)))
 
         scored.sort(key=lambda x: x[0], reverse=True)
@@ -481,10 +502,8 @@ class MemoryDB:
             # Type weight
             type_w = TYPE_WEIGHTS.get(row["cell_type"], 1.0)
 
-            # Salience multiplier
-            salience = row["salience"]
-
-            final_score = blended * type_w * salience
+            # Salience as a bounded modifier (not an unbounded multiplier)
+            final_score = blended * type_w * _salience_factor(row["salience"])
 
             row_dict = dict(row)
             row_dict.pop("embedding", None)
@@ -504,8 +523,7 @@ class MemoryDB:
             for row in fts_only_rows:
                 fts_rank = fts_scores.get(row["id"], 0.0)
                 type_w = TYPE_WEIGHTS.get(row["cell_type"], 1.0)
-                salience = row["salience"]
-                final_score = 0.3 * fts_rank * type_w * salience
+                final_score = 0.3 * fts_rank * type_w * _salience_factor(row["salience"])
                 row_dict = dict(row)
                 row_dict["similarity"] = 0.0
                 row_dict["fts_rank"] = round(fts_rank, 4)

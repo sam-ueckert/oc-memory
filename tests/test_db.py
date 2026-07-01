@@ -38,6 +38,42 @@ def test_vector_search(db):
     assert results[0]["content"] == "hello"
 
 
+def test_vector_search_salience_does_not_dominate(db):
+    """Regression: a low-similarity cell with reinforced (>1) salience must not
+    outrank a highly-relevant cell. Previously score = 0.7*sim + 0.3*salience
+    let salience=7.0 dominate cosine similarity."""
+    rng = np.random.default_rng(0)
+    q = rng.standard_normal(384).astype(np.float32)
+    q /= np.linalg.norm(q)
+
+    # Relevant: cosine ~1.0 with the query, ordinary salience.
+    relevant = q.copy()
+
+    # Junk: cosine ~0.4 with the query, but heavily reinforced salience (7.0).
+    o = rng.standard_normal(384).astype(np.float32)
+    o -= np.dot(o, q) * q            # make orthogonal to q
+    o /= np.linalg.norm(o)
+    junk = (0.4 * q + np.sqrt(1 - 0.4**2) * o).astype(np.float32)
+    junk /= np.linalg.norm(junk)
+
+    db.insert_cell({"scene": "j", "cell_type": "fact", "salience": 7.0,
+                    "content": "high-salience junk"}, embedding=junk)
+    db.insert_cell({"scene": "r", "cell_type": "fact", "salience": 0.8,
+                    "content": "highly relevant"}, embedding=relevant)
+
+    results = db.search_vector(q, limit=2)
+    assert results[0]["content"] == "highly relevant"
+    assert results[0]["similarity"] > results[1]["similarity"]
+
+
+def test_salience_factor_bounded():
+    from oc_memory.db import _salience_factor, SALIENCE_STRENGTH
+    assert _salience_factor(0.5) == pytest.approx(1.0)          # default neutral
+    assert _salience_factor(0.0) == pytest.approx(1 - SALIENCE_STRENGTH)
+    assert _salience_factor(1.0) == pytest.approx(1 + SALIENCE_STRENGTH)
+    assert _salience_factor(7.0) == pytest.approx(1 + SALIENCE_STRENGTH)  # clamped
+
+
 def test_scene_operations(db):
     db.insert_cell({"scene": "proj", "cell_type": "task", "salience": 0.7, "content": "Build thing"})
     db.insert_cell({"scene": "proj", "cell_type": "fact", "salience": 0.5, "content": "Uses Python"})
