@@ -86,6 +86,11 @@ class MemoryDB:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(str(self.db_path))
         self.db.row_factory = sqlite3.Row
+        # WAL is required for Litestream replication (it streams the WAL file);
+        # NORMAL sync is the standard safe pairing — still durable via WAL
+        # checkpointing, without FULL's fsync-per-commit cost.
+        self.db.execute("PRAGMA journal_mode=WAL")
+        self.db.execute("PRAGMA synchronous=NORMAL")
         self._init_schema()
         self._migrate_schema()
         self._migrate_add_ownership()

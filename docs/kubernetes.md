@@ -169,6 +169,22 @@ kubectl rollout status deployment/memory-server -n oc-memory
 
 ---
 
+## Litestream Replication (for local-replica clients)
+
+The bundled image (see the parent `swabby-memory` repo's `Dockerfile` +
+`docker/entrypoint.sh`) runs `litestream replicate` alongside the MCP server,
+shipping WAL changes to a local file replica at `/data/litestream-replica`.
+The manifest mounts a dedicated `litestream-replica` volume (separate from
+the primary `/data` PVC) at that path.
+
+This is what a remote client uses to keep a fast local read copy via
+`litestream restore -f` — see `oc_memory/docs/local-replica.md` for the
+client-side setup. No action is needed here beyond deploying the updated
+manifest; the replica stream runs unconditionally and costs a small amount
+of CPU/memory (accounted for in the container's resource limits).
+
+---
+
 ## Persistent Data
 
 The database is stored on the PVC at `/data/memory.db`. To back it up:

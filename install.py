@@ -3,21 +3,26 @@
 oc-memory TUI installer
 
 Usage:
-    python3 install.py [--yes] [--local | --docker]
+    python3 install.py [--yes] [--local | --docker | --local-replica]
 
 Flags:
-    --yes, -y       Non-interactive: accept all defaults
-    --local         Skip mode selection, force local Python install
-    --docker        Skip mode selection, force Docker install
+    --yes, -y          Non-interactive: accept all defaults
+    --local            Skip mode selection, force local Python install
+    --docker           Skip mode selection, force Docker install
+    --local-replica    Skip mode selection, force Litestream local-replica setup
+                        (see docs/local-replica.md)
 
 Environment overrides:
-    NONINTERACTIVE=1        Same as --yes
-    INSTALL_MODE=local      Same as --local
-    INSTALL_MODE=docker     Same as --docker
-    OC_MEMORY_HOME          Override data directory (local mode)
+    NONINTERACTIVE=1            Same as --yes
+    INSTALL_MODE=local          Same as --local
+    INSTALL_MODE=docker         Same as --docker
+    INSTALL_MODE=local-replica  Same as --local-replica
+    OC_MEMORY_HOME              Override data directory (local mode)
     OC_MEMORY_SSL_NO_VERIFY=1   Skip TLS cert verification (corporate proxies)
-    REQUESTS_CA_BUNDLE      Path to custom CA bundle
-    OC_MEMORY_OC_CONFIG     Path to openclaw.json
+    REQUESTS_CA_BUNDLE          Path to custom CA bundle
+    OC_MEMORY_OC_CONFIG         Path to openclaw.json
+    LITESTREAM_REPLICA_URL      sftp:// URL of the primary's litestream replica (local-replica mode)
+    OC_MEMORY_REMOTE_URL        Canonical remote server URL for writes (local-replica mode)
 """
 
 from __future__ import annotations
@@ -53,7 +58,9 @@ def nl():       print()
 # ── Non-interactive / mode flags ──────────────────────────────────────────────
 
 YES          = "--yes" in sys.argv or "-y" in sys.argv or os.environ.get("NONINTERACTIVE") == "1"
-_mode_flag   = "docker" if "--docker" in sys.argv else "local" if "--local" in sys.argv else ""
+_mode_flag   = ("docker" if "--docker" in sys.argv else
+                "local-replica" if "--local-replica" in sys.argv else
+                "local" if "--local" in sys.argv else "")
 INSTALL_MODE = _mode_flag or os.environ.get("INSTALL_MODE", "")
 SCRIPT_DIR   = Path(__file__).parent.resolve()
 
@@ -779,6 +786,110 @@ def do_optional_features(docker_port: int | None) -> None:
         setup_crons(cron_selected, workspace, docker_port, api_token)
 
 
+# ── Local replica mode (Litestream) ────────────────────────────────────────────
+
+def _launchd_plist(label: str, program_args: list[str], env: dict[str, str], log_dir: Path) -> str:
+    args_xml = "".join(f"<string>{a}</string>" for a in program_args)
+    env_xml = "".join(f"<key>{k}</key><string>{v}</string>" for k, v in env.items())
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key><string>{label}</string>
+    <key>ProgramArguments</key><array>{args_xml}</array>
+    <key>EnvironmentVariables</key><dict>{env_xml}</dict>
+    <key>RunAtLoad</key><true/>
+    <key>KeepAlive</key><true/>
+    <key>StandardOutPath</key><string>{log_dir}/{label}.out.log</string>
+    <key>StandardErrorPath</key><string>{log_dir}/{label}.err.log</string>
+</dict>
+</plist>
+"""
+
+
+def do_local_replica() -> int:
+    """Set up Litestream follow + the local hybrid MCP server. Returns the local port."""
+    hdr("Local Replica Setup (Litestream)")
+
+    if not shutil.which("litestream"):
+        if platform.system() == "Darwin":
+            warn("litestream not found. Install it with:")
+            info("  brew install benbjohnson/litestream/litestream")
+        else:
+            warn("litestream not found. Download a release for your platform:")
+            info("  https://litestream.io/install/linux/")
+        sys.exit(1)
+    ok(f"litestream found ({shutil.which('litestream')})")
+
+    replica_url = prompt_text(
+        "Litestream replica URL (sftp:// path to the primary's litestream-replica dir)",
+        os.environ.get("LITESTREAM_REPLICA_URL", ""),
+    )
+    if not replica_url:
+        err("A replica URL is required (e.g. sftp://user@host:22/path/to/litestream-replica)")
+        sys.exit(1)
+
+    remote_url = prompt_text(
+        "Canonical remote server URL (Streamable HTTP, for writes)",
+        os.environ.get("OC_MEMORY_REMOTE_URL", ""),
+    )
+    if not remote_url:
+        err("A remote URL is required (e.g. http://primary-host:8765/mcp)")
+        sys.exit(1)
+
+    local_db = str(Path.home() / ".oc-memory" / "local-replica" / "memory.db")
+    port = int(prompt_text("Local hybrid server port", "8765") or "8765")
+
+    log_dir = Path.home() / ".oc-memory" / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    nl()
+    info("Installing oc-memory (local hybrid server)…")
+    if shutil.which("uv"):
+        subprocess.run(["uv", "pip", "install", "-e", str(SCRIPT_DIR)], check=True)
+    else:
+        subprocess.run([sys.executable, "-m", "pip", "install", "-e", str(SCRIPT_DIR)], check=True)
+    ok("oc-memory installed")
+
+    if platform.system() == "Darwin":
+        agents_dir = Path.home() / "Library" / "LaunchAgents"
+        agents_dir.mkdir(parents=True, exist_ok=True)
+
+        follow_plist = agents_dir / "com.oc-memory.litestream-follow.plist"
+        follow_plist.write_text(_launchd_plist(
+            "com.oc-memory.litestream-follow",
+            [str(SCRIPT_DIR / "scripts" / "litestream-follow.sh")],
+            {"LITESTREAM_REPLICA_URL": replica_url, "LOCAL_DB": local_db},
+            log_dir,
+        ))
+        subprocess.run(["launchctl", "load", str(follow_plist)], capture_output=True)
+        ok(f"launchd: litestream follow → {local_db}")
+
+        server_plist = agents_dir / "com.oc-memory.local-replica-server.plist"
+        server_plist.write_text(_launchd_plist(
+            "com.oc-memory.local-replica-server",
+            [shutil.which("oc-memory-local") or "oc-memory-local", "--http"],
+            {
+                "OC_MEMORY_LOCAL_DB": local_db,
+                "OC_MEMORY_REMOTE_URL": remote_url,
+                "MCP_TRANSPORT": "http",
+                "MCP_PORT": str(port),
+            },
+            log_dir,
+        ))
+        subprocess.run(["launchctl", "load", str(server_plist)], capture_output=True)
+        ok(f"launchd: local hybrid server → http://localhost:{port}/mcp")
+    else:
+        warn("Automatic service setup is macOS-only (launchd). On Linux, run these as systemd "
+             "user units or under your process supervisor of choice:")
+        info(f"  LITESTREAM_REPLICA_URL={replica_url} LOCAL_DB={local_db} "
+             f"{SCRIPT_DIR / 'scripts' / 'litestream-follow.sh'}")
+        info(f"  OC_MEMORY_LOCAL_DB={local_db} OC_MEMORY_REMOTE_URL={remote_url} "
+             f"MCP_TRANSPORT=http MCP_PORT={port} oc-memory-local --http")
+
+    return port
+
+
 # ── Summary ────────────────────────────────────────────────────────────────────
 
 def print_summary(mode: str, port: int | None) -> None:
@@ -798,6 +909,15 @@ def print_summary(mode: str, port: int | None) -> None:
         print(f"    docker compose logs -f oc-memory")
         print(f"    docker compose restart oc-memory")
         print(f"    docker compose down oc-memory")
+    elif mode == "local-replica":
+        ok(f"Local hybrid server: http://localhost:{port}/mcp")
+        nl()
+        print(f"  {BOLD}Services installed (launchd, macOS):{NC}")
+        print("    launchctl list | grep oc-memory")
+        print("    tail -f ~/.oc-memory/logs/com.oc-memory.litestream-follow.err.log")
+        print("    tail -f ~/.oc-memory/logs/com.oc-memory.local-replica-server.err.log")
+        nl()
+        print(f"  {BOLD}Docs:{NC} docs/local-replica.md")
     else:
         ok("oc-memory installed (local Python mode)")
         nl()
@@ -832,12 +952,16 @@ def main() -> None:
         mode_idx = 0
     elif INSTALL_MODE == "local":
         mode_idx = 1
+    elif INSTALL_MODE == "local-replica":
+        mode_idx = 2
     else:
         mode_idx = menu(
             "How do you want to run oc-memory?",
             [
                 ("Docker",        "Persistent MCP server in a container — shared across all tools"),
                 ("Local Python",  "Install in your Python environment — single-user, no container"),
+                ("Local Replica", "Litestream-synced local read copy of a remote server (fast reads, "
+                                   "writes forwarded remotely)"),
             ],
             default=0,
         )
@@ -850,21 +974,28 @@ def main() -> None:
         mcp_entry = _http_entry(docker_port)
         nl()
         ok(f"Transport: Streamable HTTP  →  http://localhost:{docker_port}/mcp")
-    else:
+    elif mode_idx == 1:
         # ── Local Python path ─────────────────────────────────────────────────
         do_local()
         mcp_entry = _stdio_entry()
         nl()
         ok("Transport: stdio (direct process, no server port needed)")
+    else:
+        # ── Local Replica path ────────────────────────────────────────────────
+        replica_port = do_local_replica()
+        mcp_entry = _http_entry(replica_port)
+        nl()
+        ok(f"Transport: Streamable HTTP  →  http://localhost:{replica_port}/mcp (local replica)")
 
     # ── Client config ─────────────────────────────────────────────────────────
     do_client_config(mcp_entry)
 
     # ── Optional features ─────────────────────────────────────────────────────
-    do_optional_features(docker_port)
+    if mode_idx != 2:
+        do_optional_features(docker_port)
 
     # ── Summary ───────────────────────────────────────────────────────────────
-    mode_label = "docker" if mode_idx == 0 else "local"
+    mode_label = {0: "docker", 1: "local", 2: "local-replica"}[mode_idx]
     print_summary(mode_label, docker_port)
 
 

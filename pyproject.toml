@@ -32,6 +32,7 @@ dev = [
 [project.scripts]
 oc-memory = "oc_memory.cli:main"
 oc-memory-mcp = "oc_memory.mcp_server:main_stdio"
+oc-memory-local = "oc_memory.local_replica_server:main_stdio"
 
 [build-system]
 requires = ["setuptools>=68.0"]
