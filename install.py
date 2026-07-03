@@ -21,7 +21,7 @@ Environment overrides:
     OC_MEMORY_SSL_NO_VERIFY=1   Skip TLS cert verification (corporate proxies)
     REQUESTS_CA_BUNDLE          Path to custom CA bundle
     OC_MEMORY_OC_CONFIG         Path to openclaw.json
-    LITESTREAM_REPLICA_URL      sftp:// URL of the primary's litestream replica (local-replica mode)
+    RSYNC_SOURCE                user@host:/path/ to the primary's litestream replica (local-replica mode)
     OC_MEMORY_REMOTE_URL        Canonical remote server URL for writes (local-replica mode)
 """
 
@@ -821,12 +821,15 @@ def do_local_replica() -> int:
         sys.exit(1)
     ok(f"litestream found ({shutil.which('litestream')})")
 
-    replica_url = prompt_text(
-        "Litestream replica URL (sftp:// path to the primary's litestream-replica dir)",
-        os.environ.get("LITESTREAM_REPLICA_URL", ""),
+    rsync_source = prompt_text(
+        "rsync source for the primary's litestream-replica dir (user@host:/path/, trailing slash matters)",
+        os.environ.get("RSYNC_SOURCE", ""),
     )
-    if not replica_url:
-        err("A replica URL is required (e.g. sftp://user@host:22/path/to/litestream-replica)")
+    if not rsync_source:
+        err("An rsync source is required (e.g. user@host:/path/to/litestream-replica/)")
+        info("Note: Litestream's own sftp replica type issues a round trip per file/stat/read, "
+             "which can hang against a slow or resource-constrained primary — rsync mirrors the "
+             "directory locally first, then Litestream restores from that local copy (no network).")
         sys.exit(1)
 
     remote_url = prompt_text(
@@ -838,6 +841,7 @@ def do_local_replica() -> int:
         sys.exit(1)
 
     local_db = str(Path.home() / ".oc-memory" / "local-replica" / "memory.db")
+    mirror_dir = str(Path.home() / ".oc-memory" / "litestream-mirror")
     port = int(prompt_text("Local hybrid server port", "8765") or "8765")
 
     log_dir = Path.home() / ".oc-memory" / "logs"
@@ -855,15 +859,25 @@ def do_local_replica() -> int:
         agents_dir = Path.home() / "Library" / "LaunchAgents"
         agents_dir.mkdir(parents=True, exist_ok=True)
 
+        rsync_plist = agents_dir / "com.oc-memory.rsync-mirror.plist"
+        rsync_plist.write_text(_launchd_plist(
+            "com.oc-memory.rsync-mirror",
+            [str(SCRIPT_DIR / "scripts" / "rsync-mirror-loop.sh")],
+            {"RSYNC_SOURCE": rsync_source, "MIRROR_DIR": mirror_dir},
+            log_dir,
+        ))
+        subprocess.run(["launchctl", "load", str(rsync_plist)], capture_output=True)
+        ok(f"launchd: rsync mirror → {mirror_dir}")
+
         follow_plist = agents_dir / "com.oc-memory.litestream-follow.plist"
         follow_plist.write_text(_launchd_plist(
             "com.oc-memory.litestream-follow",
             [str(SCRIPT_DIR / "scripts" / "litestream-follow.sh")],
-            {"LITESTREAM_REPLICA_URL": replica_url, "LOCAL_DB": local_db},
+            {"MIRROR_DIR": mirror_dir, "LOCAL_DB": local_db},
             log_dir,
         ))
         subprocess.run(["launchctl", "load", str(follow_plist)], capture_output=True)
-        ok(f"launchd: litestream follow → {local_db}")
+        ok(f"launchd: litestream follow (local, no network) → {local_db}")
 
         server_plist = agents_dir / "com.oc-memory.local-replica-server.plist"
         server_plist.write_text(_launchd_plist(
@@ -882,7 +896,9 @@ def do_local_replica() -> int:
     else:
         warn("Automatic service setup is macOS-only (launchd). On Linux, run these as systemd "
              "user units or under your process supervisor of choice:")
-        info(f"  LITESTREAM_REPLICA_URL={replica_url} LOCAL_DB={local_db} "
+        info(f"  RSYNC_SOURCE={rsync_source} MIRROR_DIR={mirror_dir} "
+             f"{SCRIPT_DIR / 'scripts' / 'rsync-mirror-loop.sh'}")
+        info(f"  MIRROR_DIR={mirror_dir} LOCAL_DB={local_db} "
              f"{SCRIPT_DIR / 'scripts' / 'litestream-follow.sh'}")
         info(f"  OC_MEMORY_LOCAL_DB={local_db} OC_MEMORY_REMOTE_URL={remote_url} "
              f"MCP_TRANSPORT=http MCP_PORT={port} oc-memory-local --http")

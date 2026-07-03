@@ -10,37 +10,52 @@ reads from it directly, using local embedding compute.
 ## How it works
 
 ```
-┌─────────────────────┐         litestream          ┌──────────────────────┐
-│  Primary (remote)    │  replicate ──────────────▶  │  local file replica  │
-│  /data/memory.db      │                              │  (on primary's disk) │
-│  (WAL mode)           │                              └──────────┬───────────┘
-└─────────────────────┘                                            │ sftp pull
-                                                                     ▼
-                                                       ┌──────────────────────┐
-                                                       │  litestream restore  │
-                                                       │  -f  (client host)   │
-                                                       └──────────┬───────────┘
-                                                                     │
-                                                                     ▼
-                                                       ┌──────────────────────┐
-                                                       │  local-replica.db    │
-                                                       └──────────┬───────────┘
-                                                                     │
-                              reads ◀───────────────────────────────┤
-                     oc_memory.local_replica_server                 │
-                              writes ──────── remote MCP call ──────┘
+┌──────────────────────┐   litestream    ┌───────────────────────┐
+│  Primary (remote)     │  replicate ───▶ │  local file replica   │
+│  /data/memory.db      │                 │  (on primary's disk)  │
+│  (WAL mode)           │                 └───────────┬───────────┘
+└───────────────────────┘                              │ rsync -az --delete (SSH)
+                                                          ▼
+                                            ┌───────────────────────┐
+                                            │  litestream-mirror/   │
+                                            │  (client host, local) │
+                                            └───────────┬───────────┘
+                                                          │ litestream restore -f
+                                                          │ (file:// URL — no network)
+                                                          ▼
+                                            ┌───────────────────────┐
+                                            │  local-replica.db     │
+                                            └───────────┬───────────┘
+                                                          │
+                    reads ◀───────────────────────────────┤
+           oc_memory.local_replica_server                 │
+                    writes ──────── remote MCP call ───────┘
 ```
 
-- **Reads** (`memory_search`, `memory_search_tag`, `memory_stats`,
-  `memory_scenes`, `memory_scene`, `memory_digest`, `memory_export`) are
-  served from the local replica file — no network hop, local CPU for
-  embeddings.
-- **Writes** (`memory_store`, `memory_tag`, `memory_forget`, `memory_decay`,
-  `memory_consolidate`) are forwarded to the canonical remote server over
-  Streamable HTTP. There is exactly one writer, so no conflict resolution is
-  needed. Reads lag the primary by the follow interval (a few seconds to
-  tens of seconds) — acceptable for a memory store where writes are
-  infrequent relative to reads.
+Network transfer and WAL-segment reconstruction are deliberately split into
+two stages:
+
+- **`rsync-mirror-loop.sh`** mirrors the primary's litestream file replica to
+  a local directory over SSH on a fixed interval. Litestream's built-in
+  `sftp` replica type opens a fresh SFTP round trip per file/stat/read —
+  against a resource-constrained or high-latency primary this can be
+  extremely slow or hang outright (observed: reads that took 6-8s over MCP
+  also caused `litestream restore` against an `sftp://` URL to hang
+  indefinitely). rsync's delta-transfer algorithm over one SSH connection
+  handles many small LTX segment files far better.
+- **`litestream-follow.sh`** then runs `litestream restore -f` against that
+  *local* mirror directory (a `file://` URL) — no network I/O in Litestream's
+  own path at all, so it can't be affected by primary-host slowness.
+
+Reads (`memory_search`, `memory_search_tag`, `memory_stats`, `memory_scenes`,
+`memory_scene`, `memory_digest`, `memory_export`) are served from the local
+replica file — no network hop, local CPU for embeddings. Writes
+(`memory_store`, `memory_tag`, `memory_forget`, `memory_decay`,
+`memory_consolidate`) are forwarded to the canonical remote server over
+Streamable HTTP. There is exactly one writer, so no conflict resolution is
+needed. Reads lag the primary by roughly the rsync interval plus the follow
+interval (tens of seconds) — acceptable for a memory store where writes are
+infrequent relative to reads.
 
 ## 1. Enable WAL mode on the primary
 
@@ -62,21 +77,28 @@ For a bare-metal (non-container) primary, install Litestream
 litestream replicate -exec "oc-memory-mcp --http" /path/to/memory.db /path/to/replica-dir
 ```
 
-## 3. Pull the replica on the client
+## 3. Mirror the replica to the client, then follow it locally
 
-Install Litestream on the client machine, then run (or use
-`scripts/litestream-follow.sh`):
+Two processes, both long-running (run under launchd/systemd so they survive
+reboots):
 
 ```bash
-export LITESTREAM_REPLICA_URL="sftp://user@primary-host:22/path/to/litestream-replica"
+# 1. Keep a local mirror of the primary's replica dir in sync over SSH.
+export RSYNC_SOURCE="user@primary-host:/path/to/litestream-replica/"
+export MIRROR_DIR="$HOME/.oc-memory/litestream-mirror"
+./scripts/rsync-mirror-loop.sh &
+
+# 2. Materialize/keep updating a local SQLite copy from that local mirror —
+#    no network access in this step, so it can't hang on a slow primary.
+export MIRROR_DIR="$HOME/.oc-memory/litestream-mirror"
 export LOCAL_DB="$HOME/.oc-memory/local-replica/memory.db"
 ./scripts/litestream-follow.sh
 ```
 
-This uses Litestream's follow mode (`-f -follow-interval`) — a single
-long-running process that keeps `LOCAL_DB` continuously up to date, no cron
-loop needed. Run it under your service supervisor of choice (launchd,
-systemd) so it survives reboots.
+Don't point `litestream-follow.sh` at an `sftp://` URL directly — Litestream's
+SFTP replica client issues a separate round trip per file/stat/read, which
+can hang indefinitely against a slow or resource-constrained primary (see
+"Why two stages" above). Always mirror locally with rsync first.
 
 ## 4. Run the local hybrid server
 
