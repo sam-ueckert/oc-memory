@@ -847,7 +847,7 @@ class MemoryDB:
         return [
             dict(r)
             for r in self.db.execute(
-                "SELECT id, scene, cell_type, salience, content, source, tags, access_count, created_at, updated_at FROM mem_cells ORDER BY id"
+                "SELECT id, scene, cell_type, salience, content, source, tags, owner_id, visibility, access_count, created_at, updated_at FROM mem_cells ORDER BY id"
             ).fetchall()
         ]
 
