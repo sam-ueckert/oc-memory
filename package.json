@@ -1,0 +1,8 @@
+{
+  "private": true,
+  "type": "module",
+  "description": "Module-type marker only. Enables Node's native TypeScript execution (import/export syntax + type stripping) for the OpenClaw hook sources under hooks/ and their tests under tests/hooks/. Not published; oc-memory itself is a Python package (see pyproject.toml). No dependencies.",
+  "scripts": {
+    "test:hooks": "node --test tests/hooks/**/*.test.ts"
+  }
+}

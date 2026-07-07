@@ -1,0 +1,24 @@
+"use strict";
+
+// Test fixture standing in for a real oc-memory CLI's `search` subcommand.
+// Invoked as: node <this-file> "<query>"
+//
+// - query containing "__STALL__": hang well past any recall timeout, to
+//   prove the hook's hard timeout + kill actually fires and the caller
+//   fails open instead of blocking.
+// - query containing "__FAIL__": exit non-zero with no output, to prove
+//   generic CLI failures fail open too.
+// - otherwise: echo the query back verbatim, to prove it arrived as a
+//   single intact argv element (not shell-interpolated/split/mangled).
+
+const query = process.argv[2] || "";
+
+if (query.includes("__STALL__")) {
+  // Active timer keeps the event loop alive so this process does not exit
+  // on its own; the parent must kill it via the timeout/killSignal options.
+  setTimeout(() => {}, 60000);
+} else if (query.includes("__FAIL__")) {
+  process.exitCode = 1;
+} else {
+  process.stdout.write("oc-memory recall fixture result :: " + query + "\n");
+}
