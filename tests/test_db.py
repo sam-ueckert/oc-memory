@@ -111,10 +111,26 @@ def test_stats(db):
     assert s["embedded_cells"] == 0
 
 
+def test_all_cells_includes_ownership_fields(db):
+    db.insert_cell({
+        "scene": "test",
+        "cell_type": "fact",
+        "content": "owned export content",
+        "owner_id": "cherry-blossom",
+        "visibility": "shared",
+    })
+
+    cells = db.all_cells()
+
+    assert cells[0]["owner_id"] == "cherry-blossom"
+    assert cells[0]["visibility"] == "shared"
+
+
 def test_access_count_increments_on_fts(db):
     db.insert_cell({"scene": "test", "cell_type": "fact", "content": "unique searchterm here"})
     db.search_fts("searchterm")
     db.search_fts("searchterm")
+
     row = db.db.execute("SELECT access_count FROM mem_cells").fetchone()
     assert row[0] == 2
 
