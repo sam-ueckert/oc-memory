@@ -8,3 +8,7 @@ build/
 *.db
 .pytest_cache/
 .ruff_cache/
+
+# Node.js hooks test infrastructure
+node_modules/
+package-lock.json

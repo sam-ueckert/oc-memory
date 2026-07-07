@@ -27,8 +27,8 @@ as a raw exchange cell in oc-memory.
 
 ### Deferred Processing
 
-Capture stores **raw text only** — no embeddings or LLM extraction at capture
-time. Run the existing batch processes on a schedule:
+Capture stores **raw text via a temp file** — no shell piping, no shell interpolation.
+Run the existing batch processes on a schedule:
 
 ```bash
 # Add vector embeddings for semantic search

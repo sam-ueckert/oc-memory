@@ -1,0 +1,11 @@
+{
+  "name": "oc-memory-hooks",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test:hooks": "node --import tsx --test tests/hooks/**/*.test.ts"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.0"
+  }
+}
