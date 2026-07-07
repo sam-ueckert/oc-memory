@@ -153,3 +153,10 @@ def test_scenes_empty_db():
     result = json.loads(tool_memory_scenes({}))
     assert result["count"] == 0
     assert result["scenes"] == []
+
+
+# ── Stdio transport selection ─────────────────────────────────────────────────
+
+def test_force_raw_stdio_env_skips_mcp_sdk(monkeypatch):
+    monkeypatch.setenv("OC_MEMORY_FORCE_RAW_STDIO", "1")
+    assert _ms._try_mcp_sdk_stdio() is False

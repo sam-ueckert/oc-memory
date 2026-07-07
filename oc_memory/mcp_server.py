@@ -573,6 +573,8 @@ def run_stdio():
 
 def _try_mcp_sdk_stdio():
     """Attempt to use the official MCP SDK over stdio. Returns True if successful."""
+    if os.environ.get("OC_MEMORY_FORCE_RAW_STDIO", "").lower() in {"1", "true", "yes"}:
+        return False
     try:
         import asyncio
         from mcp.server import Server
