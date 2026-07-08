@@ -61,8 +61,11 @@ openclaw gateway restart
 Set `OC_MEMORY_CLI` environment variable if your CLI binary isn't named
 `oc-memory` or isn't on PATH. The recall hook also supports
 `OC_MEMORY_RECALL_DISABLED` (kill switch), `OC_MEMORY_RECALL_TIMEOUT_MS`
-(hard timeout budget, default 2500ms), and `OC_MEMORY_CLI_ALLOW_SHELL`
-(opt-in for `.cmd`/`.bat` wrappers on Windows) — see
+(hard timeout budget, default 2500ms), `OC_MEMORY_CLI_ALLOW_SHELL`
+(opt-in for `.cmd`/`.bat` wrappers on Windows), and a set of recall
+bounding knobs — `OC_MEMORY_RECALL_TOP_K`, `OC_MEMORY_RECALL_MIN_SCORE`,
+`OC_MEMORY_RECALL_EXCERPT_MAX_CHARS`, `OC_MEMORY_RECALL_DEDUPE_WINDOW`,
+and opt-in `OC_MEMORY_RECALL_TELEMETRY` — see
 [`oc-memory-recall/HOOK.md`](oc-memory-recall/HOOK.md#configuration) for
 details.
 

@@ -1,6 +1,8 @@
 import { test, describe, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
+import os from "node:os";
+import { readFile, rm } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
 import {
@@ -12,11 +14,25 @@ import {
   getMemCli,
   searchMemory,
   createHandler,
+  getTopK,
+  getMinScore,
+  getExcerptMax,
+  getExcerptMaxChars,
+  getDedupeWindow,
+  buildSearchArgs,
+  extractResultId,
+  splitResultLines,
+  RecallDedupeState,
 } from "../../../hooks/oc-memory-recall/handler.ts";
+import { isTelemetryEnabled, getTelemetryPath } from "../../../hooks/oc-memory-recall/telemetry.ts";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const FIXTURES_DIR = path.join(__dirname, "fixtures");
+const TELEMETRY_TMP_PATH = path.join(
+  os.tmpdir(),
+  `oc-memory-recall-telemetry-test-${process.pid}.jsonl`
+);
 
 // ── env-var helpers ──────────────────────────────────────────────────────
 
@@ -25,6 +41,13 @@ const ENV_KEYS = [
   "OC_MEMORY_CLI",
   "OC_MEMORY_RECALL_TIMEOUT_MS",
   "OC_MEMORY_CLI_ALLOW_SHELL",
+  "OC_MEMORY_RECALL_TOP_K",
+  "OC_MEMORY_RECALL_MIN_SCORE",
+  "OC_MEMORY_RECALL_EXCERPT_MAX",
+  "OC_MEMORY_RECALL_EXCERPT_MAX_CHARS",
+  "OC_MEMORY_RECALL_DEDUPE_WINDOW",
+  "OC_MEMORY_RECALL_TELEMETRY",
+  "OC_MEMORY_RECALL_TELEMETRY_PATH",
 ];
 let savedEnv: Record<string, string | undefined> = {};
 
@@ -382,5 +405,345 @@ describe("real subprocess integration (fixtures/search)", () => {
     assert.equal(event.messages.length, 1);
     assert.match(event.messages[0], /^\[oc-memory Recall\]/);
     assert.match(event.messages[0], /oc-memory recall fixture result ::/);
+  });
+});
+
+// ── recall bounding: env parsing + clamping (issue #6) ─────────────────────
+
+describe("getTopK", () => {
+  test("defaults to 5", () => {
+    assert.equal(getTopK({}), 5);
+  });
+  test("honors an in-range value", () => {
+    assert.equal(getTopK({ OC_MEMORY_RECALL_TOP_K: "8" }), 8);
+  });
+  test("zero/negative values fall back to the default", () => {
+    assert.equal(getTopK({ OC_MEMORY_RECALL_TOP_K: "0" }), 5);
+    assert.equal(getTopK({ OC_MEMORY_RECALL_TOP_K: "-3" }), 5);
+  });
+  test("clamps above the ceiling of 20", () => {
+    assert.equal(getTopK({ OC_MEMORY_RECALL_TOP_K: "999" }), 20);
+  });
+  test("fractional values >0 truncate and clamp to the floor of 1", () => {
+    assert.equal(getTopK({ OC_MEMORY_RECALL_TOP_K: "0.5" }), 1);
+  });
+  test("falls back to default on garbage input", () => {
+    assert.equal(getTopK({ OC_MEMORY_RECALL_TOP_K: "not-a-number" }), 5);
+  });
+});
+
+describe("getMinScore", () => {
+  test("defaults to 0.0 (no filtering) — deliberate, see HOOK.md", () => {
+    assert.equal(getMinScore({}), 0.0);
+  });
+  test("honors an in-range value", () => {
+    assert.equal(getMinScore({ OC_MEMORY_RECALL_MIN_SCORE: "0.42" }), 0.42);
+  });
+  test("clamps above 1.0", () => {
+    assert.equal(getMinScore({ OC_MEMORY_RECALL_MIN_SCORE: "5" }), 1.0);
+  });
+  test("clamps below 0.0", () => {
+    assert.equal(getMinScore({ OC_MEMORY_RECALL_MIN_SCORE: "-2" }), 0.0);
+  });
+  test("falls back to default on garbage input", () => {
+    assert.equal(getMinScore({ OC_MEMORY_RECALL_MIN_SCORE: "not-a-number" }), 0.0);
+  });
+});
+
+describe("getExcerptMaxChars (and legacy OC_MEMORY_RECALL_EXCERPT_MAX alias)", () => {
+  test("defaults to 800", () => {
+    assert.equal(getExcerptMaxChars({}), 800);
+  });
+  test("honors the new OC_MEMORY_RECALL_EXCERPT_MAX_CHARS name", () => {
+    assert.equal(getExcerptMaxChars({ OC_MEMORY_RECALL_EXCERPT_MAX_CHARS: "500" }), 500);
+  });
+  test("falls back to the legacy OC_MEMORY_RECALL_EXCERPT_MAX name (PR #5) when the new one is unset", () => {
+    assert.equal(getExcerptMaxChars({ OC_MEMORY_RECALL_EXCERPT_MAX: "1500" }), 1500);
+  });
+  test("the new name takes precedence when both are set", () => {
+    assert.equal(
+      getExcerptMaxChars({
+        OC_MEMORY_RECALL_EXCERPT_MAX_CHARS: "600",
+        OC_MEMORY_RECALL_EXCERPT_MAX: "2000",
+      }),
+      600
+    );
+  });
+  test("clamps below the 100-char floor", () => {
+    assert.equal(getExcerptMaxChars({ OC_MEMORY_RECALL_EXCERPT_MAX_CHARS: "10" }), 100);
+  });
+  test("clamps above the 4000-char ceiling (tighter than PR #5's 10k ceiling)", () => {
+    assert.equal(getExcerptMaxChars({ OC_MEMORY_RECALL_EXCERPT_MAX_CHARS: "9000" }), 4000);
+  });
+  test("getExcerptMax remains exported as a back-compat alias", () => {
+    assert.equal(getExcerptMax, getExcerptMaxChars);
+  });
+});
+
+describe("getDedupeWindow", () => {
+  test("defaults to 3", () => {
+    assert.equal(getDedupeWindow({}), 3);
+  });
+  test("honors an in-range value", () => {
+    assert.equal(getDedupeWindow({ OC_MEMORY_RECALL_DEDUPE_WINDOW: "5" }), 5);
+  });
+  test("0 disables dedupe and is honored exactly (not treated as unset)", () => {
+    assert.equal(getDedupeWindow({ OC_MEMORY_RECALL_DEDUPE_WINDOW: "0" }), 0);
+  });
+  test("clamps above the ceiling of 10", () => {
+    assert.equal(getDedupeWindow({ OC_MEMORY_RECALL_DEDUPE_WINDOW: "999" }), 10);
+  });
+  test("negative values fall back to the default", () => {
+    assert.equal(getDedupeWindow({ OC_MEMORY_RECALL_DEDUPE_WINDOW: "-1" }), 3);
+  });
+  test("falls back to default on garbage input", () => {
+    assert.equal(getDedupeWindow({ OC_MEMORY_RECALL_DEDUPE_WINDOW: "not-a-number" }), 3);
+  });
+});
+
+describe("buildSearchArgs", () => {
+  test("always includes --limit", () => {
+    assert.deepEqual(buildSearchArgs({ topK: 5, minScore: 0 }), ["--limit", "5"]);
+  });
+  test("includes --min-score only when > 0 (default 0.0 adds no flag)", () => {
+    assert.deepEqual(buildSearchArgs({ topK: 8, minScore: 0.4 }), [
+      "--limit",
+      "8",
+      "--min-score",
+      "0.4",
+    ]);
+  });
+});
+
+// ── in-process dedupe (issue #6) ────────────────────────────────────────
+
+describe("extractResultId / splitResultLines", () => {
+  test("extracts the leading [id] token from a formatted CLI result line", () => {
+    assert.equal(extractResultId("[42] [fact] scene:x sal:0.80 — hello"), "42");
+  });
+  test("returns null when there is no leading [id]", () => {
+    assert.equal(extractResultId("plain text, no brackets"), null);
+  });
+  test("splits into trimmed, non-empty lines and drops the (FTS fallback) marker", () => {
+    const raw = "(FTS fallback)\n\n[1] a\n  [2] b  \n";
+    assert.deepEqual(splitResultLines(raw), ["[1] a", "[2] b"]);
+  });
+});
+
+describe("RecallDedupeState (unit)", () => {
+  test("drops a candidate whose id was seen in the remembered window", () => {
+    const state = new RecallDedupeState();
+    const first = state.filterAndRecord(["[1] a", "[2] b"], 3);
+    assert.equal(first.dedupedCount, 0);
+    assert.deepEqual(first.keptLines, ["[1] a", "[2] b"]);
+
+    const second = state.filterAndRecord(["[1] a", "[3] c"], 3);
+    assert.equal(second.dedupedCount, 1);
+    assert.deepEqual(second.keptLines, ["[3] c"]);
+  });
+
+  test("maxWindows <= 0 disables dedupe and never records state", () => {
+    const state = new RecallDedupeState();
+    const first = state.filterAndRecord(["[1] a"], 0);
+    assert.deepEqual(first.keptLines, ["[1] a"]);
+    const second = state.filterAndRecord(["[1] a"], 0);
+    assert.deepEqual(second.keptLines, ["[1] a"]);
+    assert.equal(second.dedupedCount, 0);
+  });
+
+  test("falls back to full-line identity when a line has no [id] prefix", () => {
+    const state = new RecallDedupeState();
+    state.filterAndRecord(["raw content line one"], 3);
+    const second = state.filterAndRecord(["raw content line one", "a different line"], 3);
+    assert.deepEqual(second.keptLines, ["a different line"]);
+  });
+
+  test("FIFO eviction: only the last maxWindows attempts are remembered", () => {
+    const state = new RecallDedupeState();
+    state.filterAndRecord(["[1] a"], 1); // window: [[1]]
+    state.filterAndRecord(["[2] b"], 1); // window: [[2]] (evicts [1])
+    const third = state.filterAndRecord(["[1] a"], 1); // [1] no longer remembered
+    assert.deepEqual(third.keptLines, ["[1] a"]);
+    assert.equal(third.dedupedCount, 0);
+  });
+
+  test("reset() clears remembered state", () => {
+    const state = new RecallDedupeState();
+    state.filterAndRecord(["[1] a"], 3);
+    state.reset();
+    const after = state.filterAndRecord(["[1] a"], 3);
+    assert.equal(after.dedupedCount, 0);
+  });
+});
+
+describe("createHandler: topK/minScore pass-through to the CLI argv", () => {
+  test("passes --limit and --min-score through when both are configured", async () => {
+    process.env.OC_MEMORY_RECALL_TOP_K = "7";
+    process.env.OC_MEMORY_RECALL_MIN_SCORE = "0.6";
+    let capturedArgs: unknown;
+    const fakeExecFile = ((_cli: string, args: unknown, _options: any, cb: any) => {
+      capturedArgs = args;
+      cb(null, "[1] [fact] scene:test sal:0.50 — a perfectly fine long enough recall result");
+    }) as any;
+
+    const handler = createHandler({ execFileFn: fakeExecFile });
+    await handler(makeEvent("what did we decide about the database schema"));
+
+    assert.deepEqual(capturedArgs, [
+      "search",
+      "what did we decide about the database schema",
+      "--limit",
+      "7",
+      "--min-score",
+      "0.6",
+    ]);
+  });
+
+  test("omits --min-score when unset (default 0.0 means no filtering, no flag)", async () => {
+    let capturedArgs: unknown;
+    const fakeExecFile = ((_cli: string, args: unknown, _options: any, cb: any) => {
+      capturedArgs = args;
+      cb(null, "[1] [fact] scene:test sal:0.50 — a perfectly fine long enough recall result");
+    }) as any;
+
+    const handler = createHandler({ execFileFn: fakeExecFile });
+    await handler(makeEvent("what did we decide about the database schema"));
+
+    assert.deepEqual(capturedArgs, [
+      "search",
+      "what did we decide about the database schema",
+      "--limit",
+      "5",
+    ]);
+  });
+});
+
+describe("createHandler: FIFO dedupe across turns", () => {
+  test("does not re-inject the same result on the very next call", async () => {
+    const fakeExecFile = ((_cli: string, _args: unknown, _options: any, cb: any) => {
+      cb(null, "[1] [fact] scene:test sal:0.50 — the same memory both times");
+    }) as any;
+    const handler = createHandler({ execFileFn: fakeExecFile });
+
+    const event1 = makeEvent("what did we decide about the database schema");
+    await handler(event1);
+    assert.equal(event1.messages.length, 1);
+
+    const event2 = makeEvent("what did we decide about the database schema");
+    await handler(event2);
+    assert.deepEqual(
+      event2.messages,
+      [],
+      "must inject nothing at all, not an empty [oc-memory Recall] header"
+    );
+  });
+
+  test("injects only the genuinely new result when old and new results overlap", async () => {
+    let call = 0;
+    const fakeExecFile = ((_cli: string, _args: unknown, _options: any, cb: any) => {
+      call++;
+      const text =
+        call === 1
+          ? "[1] [fact] scene:test sal:0.50 — first memory here today\n" +
+            "[2] [fact] scene:test sal:0.50 — second memory here today"
+          : "[1] [fact] scene:test sal:0.50 — first memory here today\n" +
+            "[3] [fact] scene:test sal:0.50 — third memory is brand new";
+      cb(null, text);
+    }) as any;
+
+    const handler = createHandler({ execFileFn: fakeExecFile });
+    await handler(makeEvent("what did we decide about the database schema"));
+
+    const event2 = makeEvent("what did we decide about the database schema");
+    await handler(event2);
+
+    assert.equal(event2.messages.length, 1);
+    assert.ok(!event2.messages[0].includes("first memory"), "id 1 was injected last turn, should be deduped");
+    assert.ok(event2.messages[0].includes("third memory"), "id 3 is new, should be injected");
+  });
+
+  test("OC_MEMORY_RECALL_DEDUPE_WINDOW=0 disables dedupe entirely", async () => {
+    process.env.OC_MEMORY_RECALL_DEDUPE_WINDOW = "0";
+    const fakeExecFile = ((_cli: string, _args: unknown, _options: any, cb: any) => {
+      cb(null, "[1] [fact] scene:test sal:0.50 — the same memory both times");
+    }) as any;
+    const handler = createHandler({ execFileFn: fakeExecFile });
+
+    await handler(makeEvent("what did we decide about the database schema"));
+    const event2 = makeEvent("what did we decide about the database schema");
+    await handler(event2);
+
+    assert.equal(event2.messages.length, 1, "dedupe disabled -> same result injected again");
+  });
+});
+
+// ── telemetry: opt-in, JSONL, never raw content (issue #6) ─────────────────
+
+describe("telemetry", () => {
+  afterEach(async () => {
+    await rm(TELEMETRY_TMP_PATH, { force: true });
+  });
+
+  test("isTelemetryEnabled / getTelemetryPath honor env vars", () => {
+    assert.equal(isTelemetryEnabled({}), false);
+    assert.equal(isTelemetryEnabled({ OC_MEMORY_RECALL_TELEMETRY: "1" }), true);
+    assert.equal(isTelemetryEnabled({ OC_MEMORY_RECALL_TELEMETRY: "yes" }), true);
+    assert.equal(
+      getTelemetryPath({ OC_MEMORY_RECALL_TELEMETRY_PATH: "/tmp/custom.jsonl" }),
+      "/tmp/custom.jsonl"
+    );
+  });
+
+  test("writes nothing when telemetry is disabled (default, safe)", async () => {
+    process.env.OC_MEMORY_RECALL_TELEMETRY_PATH = TELEMETRY_TMP_PATH;
+    const fakeExecFile = ((_cli: string, _args: unknown, _options: any, cb: any) => {
+      cb(null, "[1] [fact] scene:test sal:0.50 — a perfectly fine long enough recall result");
+    }) as any;
+    const handler = createHandler({ execFileFn: fakeExecFile });
+    await handler(makeEvent("what did we decide about the database schema"));
+
+    await assert.rejects(() => readFile(TELEMETRY_TMP_PATH, "utf-8"));
+  });
+
+  test("appends a JSONL line with counts/timing but never raw memory content when enabled", async () => {
+    process.env.OC_MEMORY_RECALL_TELEMETRY = "1";
+    process.env.OC_MEMORY_RECALL_TELEMETRY_PATH = TELEMETRY_TMP_PATH;
+    const secretContent = "a recalled fact about the launch codes that must not leak into telemetry";
+    const fakeExecFile = ((_cli: string, _args: unknown, _options: any, cb: any) => {
+      cb(null, `[1] [fact] scene:test sal:0.50 — ${secretContent}`);
+    }) as any;
+    const handler = createHandler({ execFileFn: fakeExecFile });
+    await handler(makeEvent("what did we decide about the database schema"));
+
+    const raw = await readFile(TELEMETRY_TMP_PATH, "utf-8");
+    const lines = raw.trim().split("\n");
+    assert.equal(lines.length, 1);
+    const evt = JSON.parse(lines[0]);
+
+    assert.equal(evt.outcome, "injected");
+    assert.equal(evt.candidateCount, 1);
+    assert.equal(evt.injectedCount, 1);
+    assert.equal(evt.dedupedCount, 0);
+    assert.equal(evt.topK, 5);
+    assert.equal(evt.minScore, 0);
+    assert.equal(typeof evt.elapsedMs, "number");
+    assert.equal(typeof evt.queryChars, "number");
+    assert.ok(!raw.includes(secretContent), "telemetry must never contain raw memory content");
+  });
+
+  test("records outcome=error on a fail-open CLI error, still no raw content", async () => {
+    process.env.OC_MEMORY_RECALL_TELEMETRY = "1";
+    process.env.OC_MEMORY_RECALL_TELEMETRY_PATH = TELEMETRY_TMP_PATH;
+    const fakeExecFile = ((_cli: string, _args: unknown, _options: any, cb: any) => {
+      cb(new Error("ENOENT: no such file"));
+    }) as any;
+    const handler = createHandler({ execFileFn: fakeExecFile });
+    await handler(makeEvent("what did we decide about the database schema"));
+
+    const raw = await readFile(TELEMETRY_TMP_PATH, "utf-8");
+    const evt = JSON.parse(raw.trim().split("\n")[0]);
+    assert.equal(evt.outcome, "error");
+    assert.equal(evt.candidateCount, 0);
+    assert.equal(evt.injectedCount, 0);
   });
 });

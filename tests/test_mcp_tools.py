@@ -61,6 +61,90 @@ def test_search_returns_empty_for_unknown_query():
     assert isinstance(data["results"], list)
 
 
+# ── min_score filtering (issue #6) ─────────────────────────────────────────
+
+def test_search_min_score_ignored_when_no_similarity_score_available(monkeypatch):
+    """FTS-only fallback rows carry no similarity score, so a min_score
+    request must not silently wipe out otherwise-matching results. Embedder
+    is forced unavailable so this deterministically exercises the FTS path
+    regardless of ONNX model availability in the test environment."""
+    import oc_memory.mcp_server as _ms
+
+    class _UnavailableEmbedder:
+        def is_available(self):
+            return False
+
+    monkeypatch.setattr(_ms, "get_embedder", lambda: _UnavailableEmbedder())
+
+    tool_memory_store({"content": "k3s deployment notes for the pi cluster", "scene": "infra"})
+    result = tool_memory_search({"query": "k3s deployment", "min_score": 0.99})
+    data = json.loads(result)
+    assert data["count"] >= 1
+
+
+def test_search_min_score_filters_vector_results(monkeypatch):
+    """With vector search results (which carry a real 'similarity' score),
+    min_score must drop rows below the threshold."""
+    import oc_memory.mcp_server as _ms
+
+    class _FakeVectorEmbedder:
+        def is_available(self):
+            return True
+
+        def embed(self, text):
+            return "fake-embedding"
+
+    class _FakeVectorDB:
+        def search_vector(self, query_emb, limit=10, caller_id=None):
+            return [
+                {"id": 1, "scene": "a", "cell_type": "fact", "salience": 0.5,
+                 "content": "keep me", "tags": "[]", "similarity": 0.9},
+                {"id": 2, "scene": "b", "cell_type": "fact", "salience": 0.5,
+                 "content": "drop me", "tags": "[]", "similarity": 0.1},
+            ][:limit]
+
+        def search_fts(self, query, limit=10, caller_id=None):  # pragma: no cover
+            return []
+
+    monkeypatch.setattr(_ms, "get_db", lambda: _FakeVectorDB())
+    monkeypatch.setattr(_ms, "get_embedder", lambda: _FakeVectorEmbedder())
+
+    result = tool_memory_search({"query": "anything", "min_score": 0.5})
+    data = json.loads(result)
+    contents = [r["content"] for r in data["results"]]
+    assert "keep me" in contents
+    assert "drop me" not in contents
+
+
+def test_search_min_score_clamped_into_unit_range(monkeypatch):
+    import oc_memory.mcp_server as _ms
+
+    class _FakeVectorEmbedder:
+        def is_available(self):
+            return True
+
+        def embed(self, text):
+            return "fake-embedding"
+
+    class _FakeVectorDB:
+        def search_vector(self, query_emb, limit=10, caller_id=None):
+            return [
+                {"id": 1, "scene": "a", "cell_type": "fact", "salience": 0.5,
+                 "content": "low score row", "tags": "[]", "similarity": 0.05},
+            ][:limit]
+
+        def search_fts(self, query, limit=10, caller_id=None):  # pragma: no cover
+            return []
+
+    monkeypatch.setattr(_ms, "get_db", lambda: _FakeVectorDB())
+    monkeypatch.setattr(_ms, "get_embedder", lambda: _FakeVectorEmbedder())
+
+    # min_score of -3 clamps to 0.0, so the row (similarity 0.05) survives.
+    result = tool_memory_search({"query": "anything", "min_score": -3})
+    data = json.loads(result)
+    assert data["count"] == 1
+
+
 # ── Stats ─────────────────────────────────────────────────────────────────────
 
 def test_stats_returns_json():
@@ -115,7 +199,6 @@ def test_tag_and_search_tag():
     assert tag_result["id"] == cell_id
     assert "agent" in tag_result["tags_added"]
 
-    search_result = json.loads(tool_memory_search({"query": "agent"}))
     # Either tag search or FTS should return this cell
     # Verify tag route works via search_tag tool directly
     from oc_memory.mcp_server import tool_memory_search_tag

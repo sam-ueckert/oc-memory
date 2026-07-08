@@ -11,7 +11,13 @@ Usage:
                         Extract Hermes sessions (via `hermes sessions export`) and push to archy MCP
   oc-memory migrate-to-mcp [--db PATH] [--mcp-url URL] [--dry-run]
                         Push all cells from a local oc-memory DB to a remote MCP server
-  oc-memory search <query>            Search memories (vector + FTS fallback)
+  oc-memory search <query> [--limit N] [--min-score F] [--excerpt-max N]
+                        Search memories (vector + FTS fallback)
+                        --limit N          Max results (default 10)
+                        --min-score F      Drop results below this similarity score (0.0-1.0).
+                                           Only applied when a similarity score is available
+                                           (vector search); ignored for FTS-only fallback.
+                        --excerpt-max N    Max characters of content shown per result (default 120)
   oc-memory scenes                    List all scenes
   oc-memory scene <name>              Get scene details
   oc-memory consolidate [scene]       Consolidate scenes with LLM summaries
@@ -43,6 +49,95 @@ EXPORT_DIR = os.environ.get(
     "OC_MEMORY_EXPORT", os.path.expanduser("~/.oc-memory/export")
 )
 OLLAMA_URL = os.environ.get("OLLAMA_URL", None)  # None = use configured backend (ONNX)
+
+# ── `search` command bounding: defaults + safe clamps ──────────────────────
+#
+# Kept backwards-compatible: with no flags, `search` behaves exactly as
+# before (limit=10, min-score filtering off, 120-char content excerpts).
+
+DEFAULT_SEARCH_LIMIT = 10
+SEARCH_LIMIT_MIN = 1
+SEARCH_LIMIT_MAX = 500
+
+MIN_SCORE_FLOOR = 0.0
+MIN_SCORE_CEILING = 1.0
+
+DEFAULT_EXCERPT_CHARS = 120
+EXCERPT_MAX_MIN = 1
+EXCERPT_MAX_MAX = 5000
+
+
+def _parse_int_arg(value: str, flag: str) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        print(f"Error: {flag} expects an integer, got {value!r}", file=sys.stderr)
+        sys.exit(2)
+
+
+def _parse_float_arg(value: str, flag: str) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        print(f"Error: {flag} expects a number, got {value!r}", file=sys.stderr)
+        sys.exit(2)
+
+
+def _clamp_limit(value: int) -> int:
+    if value < SEARCH_LIMIT_MIN:
+        print(f"Error: --limit must be >= {SEARCH_LIMIT_MIN}, got {value}", file=sys.stderr)
+        sys.exit(2)
+    return min(value, SEARCH_LIMIT_MAX)
+
+
+def _clamp_min_score(value: float) -> float:
+    return max(MIN_SCORE_FLOOR, min(value, MIN_SCORE_CEILING))
+
+
+def _clamp_excerpt_max(value: int) -> int:
+    if value < EXCERPT_MAX_MIN:
+        print(f"Error: --excerpt-max must be >= {EXCERPT_MAX_MIN}, got {value}", file=sys.stderr)
+        sys.exit(2)
+    return min(value, EXCERPT_MAX_MAX)
+
+
+def _parse_search_args(argv):
+    """Parse `search <query> [--limit N] [--min-score F] [--excerpt-max N]`.
+
+    Flags may appear anywhere in argv, before/after/interleaved with query
+    words, in `--flag value` or `--flag=value` form. Returns
+    (query, limit, min_score, excerpt_max); the latter three are None when
+    not provided, so callers can apply their own defaults. Exits with a
+    clear error (status 2) on unparsable or out-of-domain values.
+    """
+    query_parts = []
+    limit = None
+    min_score = None
+    excerpt_max = None
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        flag, sep, inline_value = arg.partition("=")
+        if flag in ("--limit", "--min-score", "--excerpt-max"):
+            if sep:
+                value = inline_value
+            else:
+                if i + 1 >= len(argv):
+                    print(f"Error: {flag} requires a value", file=sys.stderr)
+                    sys.exit(2)
+                value = argv[i + 1]
+                i += 1
+            if flag == "--limit":
+                limit = _clamp_limit(_parse_int_arg(value, "--limit"))
+            elif flag == "--min-score":
+                min_score = _clamp_min_score(_parse_float_arg(value, "--min-score"))
+            else:
+                excerpt_max = _clamp_excerpt_max(_parse_int_arg(value, "--excerpt-max"))
+            i += 1
+        else:
+            query_parts.append(arg)
+            i += 1
+    return " ".join(query_parts), limit, min_score, excerpt_max
 
 
 def get_db():
@@ -147,28 +242,38 @@ def main():
             print("No cells extracted.")
 
     elif cmd == "search":
-        query = " ".join(sys.argv[2:])
+        query, limit, min_score, excerpt_max = _parse_search_args(sys.argv[2:])
+        effective_limit = limit if limit is not None else DEFAULT_SEARCH_LIMIT
+        excerpt_len = excerpt_max if excerpt_max is not None else DEFAULT_EXCERPT_CHARS
         embedder = get_embedder()
 
         results = []
         if embedder.is_available():
             try:
                 query_emb = embedder.embed(query)
-                results = db.search_vector(query_emb)
+                results = db.search_vector(query_emb, limit=effective_limit)
             except Exception:
                 pass
 
         if not results:
-            results = db.search_fts(query)
+            results = db.search_fts(query, limit=effective_limit)
             if results:
                 print("(FTS fallback)\n")
+
+        # min-score filtering happens after fetch (fetch already bounded by
+        # --limit) and only applies to results that carry a real similarity
+        # score. FTS-fallback rows have no "similarity" key at all, so they
+        # pass through unfiltered rather than being silently wiped out by a
+        # threshold that was never scored against them.
+        if min_score is not None:
+            results = [r for r in results if "similarity" not in r or r["similarity"] >= min_score]
 
         if results:
             for r in results:
                 sim = f" sim:{r['similarity']:.3f}" if "similarity" in r else ""
                 tags = r.get("tags", "[]")
                 tags_str = f" tags:{tags}" if tags and tags != "[]" else ""
-                print(f"[{r['id']}] [{r['cell_type']}] scene:{r['scene']} sal:{r['salience']:.2f}{sim}{tags_str} — {r['content'][:120]}")
+                print(f"[{r['id']}] [{r['cell_type']}] scene:{r['scene']} sal:{r['salience']:.2f}{sim}{tags_str} — {r['content'][:excerpt_len]}")
         else:
             print("No results found.")
 
@@ -247,14 +352,14 @@ def main():
     elif cmd == "export":
         backup = get_backup(db)
         n_scenes = backup.export_markdown()
-        json_path = backup.export_json()
+        backup.export_json()
         print(f"Exported {n_scenes} scenes + JSON to {EXPORT_DIR}")
 
     elif cmd == "backup":
         drive = "--drive" in sys.argv
         backup = get_backup(db)
         n_scenes = backup.export_markdown()
-        json_path = backup.export_json()
+        backup.export_json()
         print(f"Exported {n_scenes} scenes + JSON to {EXPORT_DIR}")
         ok = backup.backup_sqlite()
         print(f"SQLite backup: {'OK' if ok else 'FAILED'}")

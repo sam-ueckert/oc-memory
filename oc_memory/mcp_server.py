@@ -30,7 +30,6 @@ import os
 import sys
 import traceback
 from datetime import date as date_type
-from pathlib import Path
 
 # ── DB config ────────────────────────────────────────────────────────────────
 
@@ -127,6 +126,12 @@ TOOLS = [
             "properties": {
                 "query": {"type": "string", "description": "Search query"},
                 "limit": {"type": "integer", "description": "Max results", "default": 10, "minimum": 1, "maximum": 100},
+                "min_score": {
+                    "type": "number",
+                    "description": "Drop results below this similarity score (0.0-1.0). Only applied when a similarity score is available (vector search); ignored for FTS-only fallback results.",
+                    "minimum": 0.0,
+                    "maximum": 1.0,
+                },
                 "caller_id": {"type": "string", "description": "Caller identifier for ownership scoping. Omit for admin access."},
             },
             "required": ["query"],
@@ -285,6 +290,9 @@ def tool_memory_search(args: dict) -> str:
     if not query:
         raise ValueError("query is required")
     limit = int(args.get("limit") or 10)
+    min_score = args.get("min_score")
+    if min_score is not None:
+        min_score = max(0.0, min(float(min_score), 1.0))
     caller_id = args.get("caller_id") or None
     db = get_db()
     embedder = get_embedder()
@@ -299,6 +307,10 @@ def tool_memory_search(args: dict) -> str:
             _log(f"[mcp] vector search failed: {e}")
     if not results:
         results = db.search_fts(query, limit=limit, caller_id=caller_id)
+    # Only filter rows that actually carry a similarity score (vector path).
+    # FTS-only fallback rows have no meaningful score to filter against.
+    if min_score is not None:
+        results = [r for r in results if "similarity" not in r or r["similarity"] >= min_score]
     out = []
     for r in results:
         out.append({

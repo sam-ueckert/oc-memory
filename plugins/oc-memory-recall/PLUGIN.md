@@ -50,6 +50,10 @@ duplicated — see [`../../hooks/oc-memory-recall/handler.ts`](../../hooks/oc-me
 - **Recall only.** This plugin never writes to oc-memory. No capture/store
   path is invoked from this module (see `hooks/oc-memory-capture` for the
   separate, opt-in capture hook).
+- **Bounded recall.** Same bounding/dedupe/telemetry posture as
+  `hooks/oc-memory-recall` (shared implementation — see that module's
+  "Recall bounding" section for the full rationale, especially why
+  `OC_MEMORY_RECALL_MIN_SCORE` defaults to `0.0`).
 
 ## Configuration
 
@@ -59,6 +63,12 @@ duplicated — see [`../../hooks/oc-memory-recall/handler.ts`](../../hooks/oc-me
 | `OC_MEMORY_RECALL_DISABLED` | unset (enabled) | Kill switch; any of `1`/`true`/`yes` disables recall. |
 | `OC_MEMORY_RECALL_TIMEOUT_MS` | `2500` | Hard timeout budget, clamped to 500–3000ms. |
 | `OC_MEMORY_CLI_ALLOW_SHELL` | unset (disabled) | Opt-in only, for `.cmd`/`.bat` wrappers on Windows. |
+| `OC_MEMORY_RECALL_TOP_K` | `5` | Max results requested from the CLI (`--limit`), clamped to 1–20. |
+| `OC_MEMORY_RECALL_MIN_SCORE` | `0.0` | Minimum similarity score (`--min-score`), clamped to 0.0–1.0. Tune empirically via telemetry — see `hooks/oc-memory-recall/HOOK.md`. |
+| `OC_MEMORY_RECALL_EXCERPT_MAX_CHARS` | `800` | Max characters of the injected excerpt, clamped to 100–4000. Legacy `OC_MEMORY_RECALL_EXCERPT_MAX` still honored as a fallback name (see HOOK.md for the behavior-change note). |
+| `OC_MEMORY_RECALL_DEDUPE_WINDOW` | `3` | Number of past recall attempts checked for duplicate results (in-process, volatile). `0` disables dedupe. Clamped to 0–10. |
+| `OC_MEMORY_RECALL_TELEMETRY` | unset (disabled) | Opt-in JSONL telemetry for recall attempts; never logs raw memory content. |
+| `OC_MEMORY_RECALL_TELEMETRY_PATH` | `~/.oc-memory/recall-telemetry.jsonl` | Telemetry output path, when enabled. |
 
 ## Install
 
@@ -100,3 +110,8 @@ depend on the manifest format.
 ```bash
 node --import tsx --test tests/plugins/oc-memory-recall/*.test.ts
 ```
+
+Covers `buildQuery`, plugin registration, the recall-only guarantee, and
+(shared with the hook) `--limit`/`--min-score` argv pass-through, FIFO
+dedupe behavior, and the no-empty-`prependContext` guarantee when
+everything is filtered/deduped.
