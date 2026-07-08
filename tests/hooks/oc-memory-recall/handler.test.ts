@@ -528,6 +528,9 @@ describe("extractResultId / splitResultLines", () => {
   test("extracts the leading [id] token from a formatted CLI result line", () => {
     assert.equal(extractResultId("[42] [fact] scene:x sal:0.80 — hello"), "42");
   });
+  test("ignores non-integer leading bracket tokens", () => {
+    assert.equal(extractResultId("[fact] scene:x sal:0.80 — hello"), null);
+  });
   test("returns null when there is no leading [id]", () => {
     assert.equal(extractResultId("plain text, no brackets"), null);
   });

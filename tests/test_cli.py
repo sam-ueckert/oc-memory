@@ -51,6 +51,16 @@ def test_parse_search_args_flags_interleaved_with_query_words():
     assert excerpt_max == 50
 
 
+def test_parse_search_args_double_dash_allows_literal_flag_text():
+    query, limit, min_score, excerpt_max = cli._parse_search_args(
+        ["--limit", "3", "--", "literal", "--min-score", "text"]
+    )
+    assert query == "literal --min-score text"
+    assert limit == 3
+    assert min_score is None
+    assert excerpt_max is None
+
+
 def test_parse_search_args_invalid_limit_exits():
     with pytest.raises(SystemExit) as exc:
         cli._parse_search_args(["hello", "--limit", "not-a-number"])

@@ -244,13 +244,13 @@ export function searchMemory(query: string, opts: SearchOptions): Promise<string
 // re-injected into consecutive turns within one running hook/plugin
 // process, not to track dedupe across restarts.
 
-/** Extracts the leading `[<id>]` token from a formatted CLI result line
+/** Extracts the leading integer `[<id>]` token from a formatted CLI result line
  * (e.g. `[42] [fact] scene:x sal:0.80 — ...`), used as a stable identity
  * for dedupe. Falls back to `null` when the line doesn't match (e.g. raw,
  * non-CLI-formatted text in tests) — callers should use the full line text
  * as the identity in that case. */
 export function extractResultId(line: string): string | null {
-  const m = /^\[([^\]]+)\]/.exec(line.trim());
+  const m = /^\[(\d+)\]/.exec(line.trim());
   return m ? m[1] : null;
 }
 

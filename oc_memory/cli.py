@@ -102,7 +102,8 @@ def _parse_search_args(argv):
     """Parse `search <query> [--limit N] [--min-score F] [--excerpt-max N]`.
 
     Flags may appear anywhere in argv, before/after/interleaved with query
-    words, in `--flag value` or `--flag=value` form. Returns
+    words, in `--flag value` or `--flag=value` form. Use `--` to stop
+    flag parsing and search for literal flag-looking text. Returns
     (query, limit, min_score, excerpt_max); the latter three are None when
     not provided, so callers can apply their own defaults. Exits with a
     clear error (status 2) on unparsable values or invalid excerpt bounds;
@@ -116,6 +117,9 @@ def _parse_search_args(argv):
     i = 0
     while i < len(argv):
         arg = argv[i]
+        if arg == "--":
+            query_parts.extend(argv[i + 1 :])
+            break
         flag, sep, inline_value = arg.partition("=")
         if flag in ("--limit", "--min-score", "--excerpt-max"):
             if sep:
@@ -136,6 +140,7 @@ def _parse_search_args(argv):
         else:
             query_parts.append(arg)
             i += 1
+
     return " ".join(query_parts), limit, min_score, excerpt_max
 
 
