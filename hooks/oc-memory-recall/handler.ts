@@ -139,11 +139,17 @@ export function getDedupeWindow(env: NodeJS.ProcessEnv = process.env): number {
 }
 
 /** Builds the extra CLI flags passed through to `oc-memory search`, derived
- * from the (already clamped) topK/minScore knobs above. min-score is only
- * passed when > 0 so a default/unset threshold behaves exactly as before
- * (no filtering, no extra flag). */
-export function buildSearchArgs(opts: { topK: number; minScore: number }): string[] {
-  const args = ["--limit", String(opts.topK)];
+ * from the (already clamped) bounding knobs above. min-score is only passed
+ * when > 0 so a default/unset threshold behaves exactly as before (no
+ * filtering, no extra flag). excerptMaxChars is always passed so the CLI's
+ * direct-output truncation matches the hook/plugin injection budget instead
+ * of falling back to the CLI's shorter human-display default. */
+export function buildSearchArgs(opts: {
+  topK: number;
+  minScore: number;
+  excerptMaxChars: number;
+}): string[] {
+  const args = ["--limit", String(opts.topK), "--excerpt-max", String(opts.excerptMaxChars)];
   if (opts.minScore > 0) {
     args.push("--min-score", String(opts.minScore));
   }
@@ -343,6 +349,7 @@ export function createHandler(deps: HandlerDeps = {}) {
     const useShell = needsWindowsShell(cli, deps.platform) && shellAllowed();
     const topK = getTopK();
     const minScore = getMinScore();
+    const excerptMaxChars = getExcerptMaxChars();
 
     const start = Date.now();
     let result: string;
@@ -354,7 +361,7 @@ export function createHandler(deps: HandlerDeps = {}) {
           useShell,
           execFileFn: deps.execFileFn,
           cwd: deps.cwd,
-          extraArgs: buildSearchArgs({ topK, minScore }),
+          extraArgs: buildSearchArgs({ topK, minScore, excerptMaxChars }),
         })
       ).trim();
     } catch {
@@ -415,7 +422,6 @@ export function createHandler(deps: HandlerDeps = {}) {
       return;
     }
 
-    const excerptMaxChars = getExcerptMaxChars();
     const joined = keptLines.join("\n");
     const truncated = joined.length > excerptMaxChars
       ? joined.substring(0, excerptMaxChars) + "\n... (truncated)"

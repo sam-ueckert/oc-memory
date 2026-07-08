@@ -502,13 +502,20 @@ describe("getDedupeWindow", () => {
 });
 
 describe("buildSearchArgs", () => {
-  test("always includes --limit", () => {
-    assert.deepEqual(buildSearchArgs({ topK: 5, minScore: 0 }), ["--limit", "5"]);
+  test("always includes --limit and --excerpt-max", () => {
+    assert.deepEqual(buildSearchArgs({ topK: 5, minScore: 0, excerptMaxChars: 800 }), [
+      "--limit",
+      "5",
+      "--excerpt-max",
+      "800",
+    ]);
   });
   test("includes --min-score only when > 0 (default 0.0 adds no flag)", () => {
-    assert.deepEqual(buildSearchArgs({ topK: 8, minScore: 0.4 }), [
+    assert.deepEqual(buildSearchArgs({ topK: 8, minScore: 0.4, excerptMaxChars: 1200 }), [
       "--limit",
       "8",
+      "--excerpt-max",
+      "1200",
       "--min-score",
       "0.4",
     ]);
@@ -580,6 +587,7 @@ describe("createHandler: topK/minScore pass-through to the CLI argv", () => {
   test("passes --limit and --min-score through when both are configured", async () => {
     process.env.OC_MEMORY_RECALL_TOP_K = "7";
     process.env.OC_MEMORY_RECALL_MIN_SCORE = "0.6";
+    process.env.OC_MEMORY_RECALL_EXCERPT_MAX_CHARS = "900";
     let capturedArgs: unknown;
     const fakeExecFile = ((_cli: string, args: unknown, _options: any, cb: any) => {
       capturedArgs = args;
@@ -594,6 +602,8 @@ describe("createHandler: topK/minScore pass-through to the CLI argv", () => {
       "what did we decide about the database schema",
       "--limit",
       "7",
+      "--excerpt-max",
+      "900",
       "--min-score",
       "0.6",
     ]);
@@ -614,6 +624,8 @@ describe("createHandler: topK/minScore pass-through to the CLI argv", () => {
       "what did we decide about the database schema",
       "--limit",
       "5",
+      "--excerpt-max",
+      "800",
     ]);
   });
 });

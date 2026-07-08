@@ -142,6 +142,7 @@ export function createRecallHandler(deps: HandlerDeps = {}): BeforePromptBuildHa
     const useShell = needsWindowsShell(cli, deps.platform) && shellAllowed();
     const topK = getTopK();
     const minScore = getMinScore();
+    const excerptMaxChars = getExcerptMaxChars();
 
     const start = Date.now();
     let result: string;
@@ -152,7 +153,7 @@ export function createRecallHandler(deps: HandlerDeps = {}): BeforePromptBuildHa
         useShell,
         execFileFn: deps.execFileFn,
         cwd: deps.cwd,
-        extraArgs: buildSearchArgs({ topK, minScore }),
+        extraArgs: buildSearchArgs({ topK, minScore, excerptMaxChars }),
       };
       result = (await searchMemory(query, opts)).trim();
     } catch {
@@ -212,7 +213,6 @@ export function createRecallHandler(deps: HandlerDeps = {}): BeforePromptBuildHa
       return undefined;
     }
 
-    const excerptMaxChars = getExcerptMaxChars();
     const joined = keptLines.join("\n");
     const truncated =
       joined.length > excerptMaxChars ? joined.substring(0, excerptMaxChars) + "\n... (truncated)" : joined;

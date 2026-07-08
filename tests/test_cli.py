@@ -57,16 +57,14 @@ def test_parse_search_args_invalid_limit_exits():
     assert exc.value.code == 2
 
 
-def test_parse_search_args_zero_limit_exits():
-    with pytest.raises(SystemExit) as exc:
-        cli._parse_search_args(["hello", "--limit", "0"])
-    assert exc.value.code == 2
+def test_parse_search_args_zero_limit_clamps_to_floor():
+    _, limit, _, _ = cli._parse_search_args(["hello", "--limit", "0"])
+    assert limit == cli.SEARCH_LIMIT_MIN
 
 
-def test_parse_search_args_negative_limit_exits():
-    with pytest.raises(SystemExit) as exc:
-        cli._parse_search_args(["hello", "--limit", "-1"])
-    assert exc.value.code == 2
+def test_parse_search_args_negative_limit_clamps_to_floor():
+    _, limit, _, _ = cli._parse_search_args(["hello", "--limit", "-1"])
+    assert limit == cli.SEARCH_LIMIT_MIN
 
 
 def test_parse_search_args_negative_excerpt_max_exits():

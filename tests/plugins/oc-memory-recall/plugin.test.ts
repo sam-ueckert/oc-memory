@@ -284,6 +284,7 @@ describe("createRecallHandler: topK/minScore pass-through to the CLI argv", () =
   test("passes --limit and --min-score through when both are configured", async () => {
     process.env.OC_MEMORY_RECALL_TOP_K = "7";
     process.env.OC_MEMORY_RECALL_MIN_SCORE = "0.6";
+    process.env.OC_MEMORY_RECALL_EXCERPT_MAX_CHARS = "900";
     let capturedArgs: unknown;
     const fakeExecFile = ((_cli: string, args: unknown, _options: any, cb: any) => {
       capturedArgs = args;
@@ -295,7 +296,14 @@ describe("createRecallHandler: topK/minScore pass-through to the CLI argv", () =
 
     const args = capturedArgs as string[];
     assert.equal(args[0], "search");
-    assert.deepEqual(args.slice(-4), ["--limit", "7", "--min-score", "0.6"]);
+    assert.deepEqual(args.slice(-6), [
+      "--limit",
+      "7",
+      "--excerpt-max",
+      "900",
+      "--min-score",
+      "0.6",
+    ]);
   });
 
   test("omits --min-score when unset (default 0.0 means no filtering, no flag)", async () => {
@@ -309,7 +317,7 @@ describe("createRecallHandler: topK/minScore pass-through to the CLI argv", () =
     await handler(makePromptEvent("what did we decide about the database schema"));
 
     const args = capturedArgs as string[];
-    assert.deepEqual(args.slice(-2), ["--limit", "5"]);
+    assert.deepEqual(args.slice(-4), ["--limit", "5", "--excerpt-max", "800"]);
   });
 });
 

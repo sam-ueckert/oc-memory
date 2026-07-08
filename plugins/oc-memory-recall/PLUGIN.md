@@ -54,6 +54,11 @@ duplicated — see [`../../hooks/oc-memory-recall/handler.ts`](../../hooks/oc-me
   `hooks/oc-memory-recall` (shared implementation — see that module's
   "Recall bounding" section for the full rationale, especially why
   `OC_MEMORY_RECALL_MIN_SCORE` defaults to `0.0`).
+- **Separate dedupe window from the hook.** The plugin and the
+  `message:received` hook are alternate recall paths and each keeps its own
+  volatile in-process dedupe state. Running both at once can duplicate recall
+  across paths; normally enable this plugin for same-turn recall and leave the
+  hook disabled unless you explicitly want both.
 
 ## Configuration
 

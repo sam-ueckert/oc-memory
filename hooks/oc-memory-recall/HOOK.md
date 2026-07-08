@@ -61,10 +61,11 @@ access to past conversations, decisions, and facts without manual search calls.
 
 Added in issue #6, on top of PR #5's baseline hook:
 
-- `OC_MEMORY_RECALL_TOP_K` and `OC_MEMORY_RECALL_MIN_SCORE` are passed
-  through to `oc-memory search` as `--limit`/`--min-score` — bounding and
-  filtering happen server-side (CLI/DB), not by discarding results
-  client-side after fetching more than needed.
+- `OC_MEMORY_RECALL_TOP_K`, `OC_MEMORY_RECALL_MIN_SCORE`, and
+  `OC_MEMORY_RECALL_EXCERPT_MAX_CHARS` are passed through to
+  `oc-memory search` as `--limit`/`--min-score`/`--excerpt-max` — bounding,
+  filtering, and per-result CLI output truncation happen before injection,
+  not by fetching more than needed and discarding it client-side.
 - **`OC_MEMORY_RECALL_MIN_SCORE` defaults to `0.0` (no filtering)
   deliberately.** Similarity score distributions vary by embedding model
   and corpus — a "safe-looking" non-zero default (e.g. `0.3`) could
@@ -78,6 +79,11 @@ Added in issue #6, on top of PR #5's baseline hook:
   If every candidate for a turn is deduped (or the CLI returns nothing
   usable), the hook injects nothing — it never sends an empty
   `[oc-memory Recall]` header.
+- The hook and the same-turn plugin are alternate recall paths and each owns
+  its own volatile dedupe window. Running both at once can therefore inject
+  the same memory through the other path even after one path dedupes it;
+  operators should usually enable the plugin for same-turn recall and leave
+  this hook disabled unless they intentionally want both behaviors.
 - **Legacy `OC_MEMORY_RECALL_EXCERPT_MAX` env var:** still read as a
   fallback when `OC_MEMORY_RECALL_EXCERPT_MAX_CHARS` is unset, so existing
   PR #5 configs keep working. Behavior change (documented, not silent):

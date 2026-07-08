@@ -84,10 +84,7 @@ def _parse_float_arg(value: str, flag: str) -> float:
 
 
 def _clamp_limit(value: int) -> int:
-    if value < SEARCH_LIMIT_MIN:
-        print(f"Error: --limit must be >= {SEARCH_LIMIT_MIN}, got {value}", file=sys.stderr)
-        sys.exit(2)
-    return min(value, SEARCH_LIMIT_MAX)
+    return min(max(value, SEARCH_LIMIT_MIN), SEARCH_LIMIT_MAX)
 
 
 def _clamp_min_score(value: float) -> float:
@@ -108,8 +105,10 @@ def _parse_search_args(argv):
     words, in `--flag value` or `--flag=value` form. Returns
     (query, limit, min_score, excerpt_max); the latter three are None when
     not provided, so callers can apply their own defaults. Exits with a
-    clear error (status 2) on unparsable or out-of-domain values.
+    clear error (status 2) on unparsable values or invalid excerpt bounds;
+    limit/min-score are clamped into their documented safe ranges.
     """
+
     query_parts = []
     limit = None
     min_score = None
