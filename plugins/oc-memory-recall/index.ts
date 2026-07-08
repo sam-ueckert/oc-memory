@@ -8,8 +8,15 @@ import {
   sanitizeQuery,
   searchMemory,
   looksLikeNoise,
-  getExcerptMax,
+  getExcerptMaxChars,
+  getTopK,
+  getMinScore,
+  getDedupeWindow,
+  buildSearchArgs,
+  splitResultLines,
+  RecallDedupeState,
 } from "../../hooks/oc-memory-recall/handler.ts";
+import { estimateTokens, parseTopScore, recordRecallTelemetry } from "../../hooks/oc-memory-recall/telemetry.ts";
 
 /**
  * oc-memory recall as an OpenClaw *plugin*, registered on the
@@ -121,6 +128,10 @@ export interface HandlerDeps extends HookHandlerDeps {}
  * agent proceeds without recall context.
  */
 export function createRecallHandler(deps: HandlerDeps = {}): BeforePromptBuildHandler {
+  // One dedupe window per handler instance — see handler.ts for rationale
+  // (volatile, in-process session state, not persisted to the DB for v1).
+  const dedupe = new RecallDedupeState();
+
   return async (event) => {
     if (isRecallDisabled()) return undefined;
 
@@ -129,7 +140,11 @@ export function createRecallHandler(deps: HandlerDeps = {}): BeforePromptBuildHa
 
     const cli = getMemCli();
     const useShell = needsWindowsShell(cli, deps.platform) && shellAllowed();
+    const topK = getTopK();
+    const minScore = getMinScore();
+    const excerptMaxChars = getExcerptMaxChars();
 
+    const start = Date.now();
     let result: string;
     try {
       const opts: SearchOptions = {
@@ -138,19 +153,83 @@ export function createRecallHandler(deps: HandlerDeps = {}): BeforePromptBuildHa
         useShell,
         execFileFn: deps.execFileFn,
         cwd: deps.cwd,
+        extraArgs: buildSearchArgs({ topK, minScore, excerptMaxChars }),
       };
       result = (await searchMemory(query, opts)).trim();
     } catch {
       // Timeout, missing CLI, non-zero exit, wrapper error, etc. Fail open:
       // no thrown error, no injected context, the turn proceeds normally.
+      await recordRecallTelemetry({
+        queryChars: query.length,
+        queryTokensEstimate: estimateTokens(query),
+        topK,
+        minScore,
+        candidateCount: 0,
+        dedupedCount: 0,
+        injectedCount: 0,
+        injectedChars: 0,
+        elapsedMs: Date.now() - start,
+        outcome: "error",
+      });
+      return undefined;
+    }
+    const elapsedMs = Date.now() - start;
+
+    if (!result || result.includes("No results") || result.length < 20) {
+      await recordRecallTelemetry({
+        queryChars: query.length,
+        queryTokensEstimate: estimateTokens(query),
+        topK,
+        minScore,
+        candidateCount: 0,
+        dedupedCount: 0,
+        injectedCount: 0,
+        injectedChars: 0,
+        elapsedMs,
+        outcome: "empty",
+      });
       return undefined;
     }
 
-    if (!result || result.includes("No results") || result.length < 20) return undefined;
+    const candidateLines = splitResultLines(result);
+    const { keptLines, dedupedCount } = dedupe.filterAndRecord(candidateLines, getDedupeWindow());
+    const topScore = parseTopScore(candidateLines);
 
-    const excerptMax = getExcerptMax();
+    // Everything was deduped — return no context rather than an empty header.
+    if (keptLines.length === 0) {
+      await recordRecallTelemetry({
+        queryChars: query.length,
+        queryTokensEstimate: estimateTokens(query),
+        topK,
+        minScore,
+        candidateCount: candidateLines.length,
+        dedupedCount,
+        injectedCount: 0,
+        injectedChars: 0,
+        topScore,
+        elapsedMs,
+        outcome: "empty",
+      });
+      return undefined;
+    }
+
+    const joined = keptLines.join("\n");
     const truncated =
-      result.length > excerptMax ? result.substring(0, excerptMax) + "\n... (truncated)" : result;
+      joined.length > excerptMaxChars ? joined.substring(0, excerptMaxChars) + "\n... (truncated)" : joined;
+
+    await recordRecallTelemetry({
+      queryChars: query.length,
+      queryTokensEstimate: estimateTokens(query),
+      topK,
+      minScore,
+      candidateCount: candidateLines.length,
+      dedupedCount,
+      injectedCount: keptLines.length,
+      injectedChars: truncated.length,
+      topScore,
+      elapsedMs,
+      outcome: "injected",
+    });
 
     return { prependContext: `[oc-memory Recall]\n${truncated}` };
   };
