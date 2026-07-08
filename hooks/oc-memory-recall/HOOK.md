@@ -10,6 +10,13 @@ Searches oc-memory (SQLite FTS) on every inbound message and injects relevant
 memories into the agent's context before it responds. Gives your agent automatic
 access to past conversations, decisions, and facts without manual search calls.
 
+> **Note:** `message:received` is fire-and-forget from OpenClaw's
+> perspective, so this hook cannot reliably inject context into the *same*
+> model turn that triggered it. For same-turn recall, use the
+> [`oc-memory-recall` plugin](../../plugins/oc-memory-recall/PLUGIN.md)
+> instead, which registers on OpenClaw's `before_prompt_build` hook. This
+> hook remains available for setups that only need best-effort recall.
+
 ## Requirements
 
 - `oc-memory` CLI must be on PATH (or set the `OC_MEMORY_CLI` env var)

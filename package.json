@@ -3,7 +3,13 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test:hooks": "node --import tsx --test tests/hooks/**/*.test.ts"
+    "test:hooks": "node --import tsx --test tests/hooks/**/*.test.ts",
+    "test:plugins": "node --import tsx --test tests/plugins/**/*.test.ts",
+    "test": "npm run test:hooks && npm run test:plugins"
+  },
+  "exports": {
+    "./plugins/oc-memory-recall": "./plugins/oc-memory-recall/index.ts",
+    "./hooks/oc-memory-recall": "./hooks/oc-memory-recall/handler.ts"
   },
   "devDependencies": {
     "tsx": "^4.19.0"
