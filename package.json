@@ -8,7 +8,8 @@
     "test": "npm run test:hooks && npm run test:plugins"
   },
   "exports": {
-    "./plugins/oc-memory-recall": "./plugins/oc-memory-recall/index.ts"
+    "./plugins/oc-memory-recall": "./plugins/oc-memory-recall/index.ts",
+    "./hooks/oc-memory-recall": "./hooks/oc-memory-recall/handler.ts"
   },
   "devDependencies": {
     "tsx": "^4.19.0"

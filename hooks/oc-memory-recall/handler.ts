@@ -56,6 +56,19 @@ export function shellAllowed(env: NodeJS.ProcessEnv = process.env): boolean {
   return truthyFlag(env.OC_MEMORY_CLI_ALLOW_SHELL);
 }
 
+const DEFAULT_EXCERPT_MAX = 1500;
+
+/**
+ * Returns the max number of characters for a recall excerpt. Configurable
+ * via the OC_MEMORY_RECALL_EXCERPT_MAX env var. Capped at 10 000 to prevent
+ * unbounded prompt bloat.
+ */
+export function getExcerptMax(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = Number(env.OC_MEMORY_RECALL_EXCERPT_MAX);
+  if (!Number.isFinite(raw) || raw <= 0) return DEFAULT_EXCERPT_MAX;
+  return Math.min(raw, 10_000);
+}
+
 // Matches ASCII control characters (0x00-0x1F, 0x7F). Built from char codes
 // rather than a literal regex to keep the source file free of raw control
 // bytes.
@@ -74,6 +87,19 @@ export function sanitizeQuery(content: string, maxLen = 200): string {
     .replace(CONTROL_CHARS_RE, " ")
     .trim()
     .substring(0, maxLen);
+}
+
+/**
+ * Quick check: is this text likely auto-generated noise (heartbeat polls,
+ * very short queries, empty text) rather than a real recall query?
+ * Uses a regex for the heartbeat prefix match rather than literal `.includes`
+ * calls, so it catches variants without re-maintenance.
+ */
+export function looksLikeNoise(text: string): boolean {
+  if (!text) return true;
+  if (text.split(/\s+/).length < 2) return true;
+  if (/^\s*(?:HEARTBEAT|Read HEARTBEAT\.md)\b/mi.test(text)) return true;
+  return false;
 }
 
 export interface SearchOptions {
@@ -137,7 +163,7 @@ export function createHandler(deps: HandlerDeps = {}) {
     if (!content || content.length < 10) return;
 
     // Skip heartbeat polls
-    if (content.includes("HEARTBEAT") || content.includes("Read HEARTBEAT.md")) return;
+    if (looksLikeNoise(content)) return;
 
     const query = sanitizeQuery(content);
     if (!query || query.split(/\s+/).length < 2) return;
@@ -164,8 +190,9 @@ export function createHandler(deps: HandlerDeps = {}) {
 
     if (!result || result.includes("No results") || result.length < 20) return;
 
-    const truncated = result.length > 1500
-      ? result.substring(0, 1500) + "\n... (truncated)"
+    const excerptMax = getExcerptMax();
+    const truncated = result.length > excerptMax
+      ? result.substring(0, excerptMax) + "\n... (truncated)"
       : result;
 
     event.messages.push(`[oc-memory Recall]\n${truncated}`);

@@ -7,6 +7,8 @@ import {
   shellAllowed,
   sanitizeQuery,
   searchMemory,
+  looksLikeNoise,
+  getExcerptMax,
 } from "../../hooks/oc-memory-recall/handler.ts";
 
 /**
@@ -107,13 +109,6 @@ export function buildQuery(event: BeforePromptBuildEvent, maxLen = MAX_QUERY_LEN
   return sanitizeQuery(combined, maxLen);
 }
 
-function looksLikeNoise(query: string): boolean {
-  if (!query) return true;
-  if (query.split(/\s+/).length < 2) return true;
-  if (query.includes("HEARTBEAT") || query.includes("Read HEARTBEAT.md")) return true;
-  return false;
-}
-
 // ── handler ──────────────────────────────────────────────────────────────
 
 export interface HandlerDeps extends HookHandlerDeps {}
@@ -153,8 +148,9 @@ export function createRecallHandler(deps: HandlerDeps = {}): BeforePromptBuildHa
 
     if (!result || result.includes("No results") || result.length < 20) return undefined;
 
+    const excerptMax = getExcerptMax();
     const truncated =
-      result.length > 1500 ? result.substring(0, 1500) + "\n... (truncated)" : result;
+      result.length > excerptMax ? result.substring(0, excerptMax) + "\n... (truncated)" : result;
 
     return { prependContext: `[oc-memory Recall]\n${truncated}` };
   };
