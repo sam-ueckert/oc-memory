@@ -8,7 +8,12 @@ dependencies = [
     "numpy>=1.26.0",
     "onnxruntime>=1.17.0",
     "tokenizers>=0.15.0",
-    "mcp>=1.0.0",
+    # Upper bound is load-bearing: mcp 2.0.0 removed the mcp.server.fastmcp
+    # module path this codebase imports for HTTP mode. An unpinned rebuild
+    # silently produces an image that crashes at startup with
+    #   "HTTP mode requires mcp[cli] ... No module named 'mcp.server.fastmcp'".
+    # Production ran 1.28.1. Revisit only alongside a fastmcp import migration.
+    "mcp>=1.0.0,<2",
     "uvicorn>=0.29.0",
     "starlette>=0.37.0",
     "anyio>=4.0.0",
