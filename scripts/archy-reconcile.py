@@ -13,6 +13,7 @@ independently and this just catches the two up whenever it can reach both.
 """
 import base64
 import json
+import shlex
 import subprocess
 import sqlite3
 import sys
@@ -51,7 +52,10 @@ def remote_pod_name():
 
 
 def remote_exec(pod, py_code, input_data=None):
-    cmd = f"sudo -n kubectl exec -i -n {NAMESPACE} {pod} -- python3 -c {json.dumps(py_code)}"
+    # shlex.quote, not json.dumps: the command passes through exactly one remote
+    # shell, and json.dumps turned newlines into a literal "\\n", so every
+    # multi-line snippet died with a SyntaxError (pushes and pulls never ran).
+    cmd = f"sudo -n kubectl exec -i -n {NAMESPACE} {pod} -- python3 -c {shlex.quote(py_code)}"
     r = ssh(cmd, input_data=input_data, timeout=90)
     if r.returncode != 0:
         raise RuntimeError(r.stderr.decode().strip())
@@ -96,7 +100,7 @@ for d in cells:
     inserted += 1
 c.commit()
 print(json.dumps({'inserted': inserted, 'cells': c.execute('select count(*) from mem_cells').fetchone()[0]}))
-"""
+""" % REMOTE_DB
 
 
 def local_hashes(conn):
