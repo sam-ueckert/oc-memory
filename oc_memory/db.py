@@ -12,6 +12,8 @@ from typing import Optional
 
 import numpy as np
 
+from .redact import redact_secrets
+
 log = logging.getLogger(__name__)
 
 # Admin user who bypasses all ownership filters (set OC_MEMORY_ADMIN_USER to your user ID)
@@ -243,6 +245,11 @@ class MemoryDB:
         """Insert a memory cell. Returns row id. Skips on duplicate if dedup=True."""
         now = datetime.utcnow().isoformat()
         content = cell["content"] if isinstance(cell["content"], str) else json.dumps(cell["content"])
+        # Never persist raw credentials: cells fan out to replicas, exports and prompts.
+        content, redacted = redact_secrets(content)
+        if redacted:
+            log.warning("insert_cell: redacted %s from scene=%s", sorted(set(redacted)), cell.get("scene"))
+            self._increment_stat("secrets_redacted", len(redacted))
         content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
         emb_blob = embedding.tobytes() if embedding is not None else None
         tags = cell.get("tags", [])

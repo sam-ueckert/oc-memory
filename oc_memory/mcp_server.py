@@ -264,6 +264,9 @@ def tool_memory_store(args: dict) -> str:
     content = args.get("content", "")
     if not content:
         raise ValueError("content is required")
+    # Redact before embedding so the vector matches what insert_cell stores.
+    from .redact import redact_secrets
+    content, _ = redact_secrets(content)
     cell = {
         "content": content,
         "cell_type": args.get("cell_type", "fact"),
