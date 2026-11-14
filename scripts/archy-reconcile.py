@@ -17,6 +17,12 @@ import shlex
 import subprocess
 import sqlite3
 import sys
+from pathlib import Path
+
+# redact.py is stdlib-only, so import it straight from the repo; this script runs
+# under whatever python3 launchd finds, not the oc-memory venv.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from oc_memory.redact import contains_secret  # noqa: E402
 
 LOCAL_DB = "/Users/ueckerts/.oc-memory/local-replica/memory.db"
 SSH_HOST = "swabby"
@@ -122,6 +128,20 @@ def local_cells_for(conn, hashes):
     return out
 
 
+def drop_secret_cells(cells, side):
+    """Refuse to copy cells holding raw credentials. insert_cell redacts new cells on
+    both sides, so only legacy rows reach here; they are logged (by id, never content)
+    for manual cleanup instead of spreading to the other replica."""
+    kept = []
+    for d in cells:
+        if contains_secret(d.get("content") or ""):
+            log(f"[archy-reconcile] NOT syncing {side} cell id={d.get('id')} scene={d.get('scene')}: "
+                "contains a credential; redact or forget it on that side")
+            continue
+        kept.append(d)
+    return kept
+
+
 def apply_local(conn, cells):
     inserted = 0
     for d in cells:
@@ -169,15 +189,17 @@ def main():
 
         pushed = 0
         if mac_only:
-            payload = json.dumps(local_cells_for(conn, mac_only)).encode()
-            remote_exec(pod, APPLY_CELLS_PY, input_data=payload)
-            pushed = len(mac_only)
+            cells = drop_secret_cells(local_cells_for(conn, mac_only), "mac")
+            if cells:
+                payload = json.dumps(cells).encode()
+                remote_exec(pod, APPLY_CELLS_PY, input_data=payload)
+            pushed = len(cells)
 
         pulled = 0
         if swabby_only:
             hash_list = "\n".join(swabby_only).encode()
             cells_raw = remote_exec(pod, DUMP_CELLS_PY, input_data=hash_list)
-            cells = json.loads(cells_raw)
+            cells = drop_secret_cells(json.loads(cells_raw), "swabby")
             pulled = apply_local(conn, cells)
 
         log(f"[archy-reconcile] pushed {pushed} mac-only cells to swabby, "
